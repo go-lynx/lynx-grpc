@@ -14,8 +14,8 @@ import (
 	"github.com/go-kratos/kratos/v2/selector/p2c"
 	"github.com/go-kratos/kratos/v2/selector/random"
 	"github.com/go-kratos/kratos/v2/selector/wrr"
-	"github.com/go-lynx/lynx/app/log"
-	"github.com/go-lynx/lynx/plugins/service/grpc/filter"
+	"github.com/go-lynx/lynx-grpc/filter"
+	"github.com/go-lynx/lynx/log"
 )
 
 // LoadBalancerType defines the type of load balancing strategy

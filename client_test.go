@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-lynx/lynx/plugins/service/grpc/conf"
+	"github.com/go-lynx/lynx-grpc/conf"
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/durationpb"

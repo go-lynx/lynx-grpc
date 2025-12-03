@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-lynx/lynx/plugins/service/grpc/conf"
+	"github.com/go-lynx/lynx-grpc/conf"
 )
 
 // ValidationError represents a configuration validation error

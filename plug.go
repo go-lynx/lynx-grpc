@@ -3,8 +3,8 @@ package grpc
 import (
 	"fmt"
 	"github.com/go-kratos/kratos/v2/transport/grpc"
-	"github.com/go-lynx/lynx/app"
-	"github.com/go-lynx/lynx/app/factory"
+	"github.com/go-lynx/lynx"
+	"github.com/go-lynx/lynx/pkg/factory"
 	"github.com/go-lynx/lynx/plugins"
 )
 
@@ -29,15 +29,15 @@ func init() {
 //   - *grpc.Server: Configured gRPC server instance
 //   - error: Any error that occurred while retrieving the server
 func GetGrpcServer(pluginManager interface{}) (*grpc.Server, error) {
-	var pm app.PluginManager
+	var pm lynx.PluginManager
 	if pluginManager == nil {
-		if app.Lynx() == nil || app.Lynx().GetPluginManager() == nil {
+		if lynx.Lynx() == nil || lynx.Lynx().GetPluginManager() == nil {
 			return nil, fmt.Errorf("plugin manager is nil")
 		}
-		pm = app.Lynx().GetPluginManager()
+		pm = lynx.Lynx().GetPluginManager()
 	} else {
 		var ok bool
-		pm, ok = pluginManager.(app.PluginManager)
+		pm, ok = pluginManager.(lynx.PluginManager)
 		if !ok {
 			return nil, fmt.Errorf("unsupported plugin manager type %T", pluginManager)
 		}

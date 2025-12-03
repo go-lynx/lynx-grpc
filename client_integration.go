@@ -5,8 +5,8 @@ import (
 
 	"github.com/go-kratos/kratos/v2/registry"
 	"github.com/go-kratos/kratos/v2/selector"
-	"github.com/go-lynx/lynx/app/conf"
-	"github.com/go-lynx/lynx/app/log"
+	"github.com/go-lynx/lynx/conf"
+	"github.com/go-lynx/lynx/log"
 	"google.golang.org/grpc"
 )
 

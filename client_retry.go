@@ -7,7 +7,7 @@ import (
 	"math/rand"
 	"time"
 
-	"github.com/go-lynx/lynx/app/log"
+	"github.com/go-lynx/lynx/log"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )

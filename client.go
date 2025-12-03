@@ -16,9 +16,9 @@ import (
 	"github.com/go-kratos/kratos/v2/middleware/tracing"
 	"github.com/go-kratos/kratos/v2/registry"
 	"github.com/go-kratos/kratos/v2/selector"
-	"github.com/go-lynx/lynx/app"
+	"github.com/go-lynx/lynx"
+	"github.com/go-lynx/lynx-grpc/conf"
 	"github.com/go-lynx/lynx/plugins"
-	"github.com/go-lynx/lynx/plugins/service/grpc/conf"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/connectivity"
@@ -826,5 +826,5 @@ func (c *ClientPlugin) calculateRetryDelay(attempt int, baseDelay, maxDelay time
 // getCertProvider gets the certificate provider from the application
 func (c *ClientPlugin) getCertProvider() interface{} {
 	// Get certificate provider from the Lynx application
-	return app.Lynx().Certificate()
+	return lynx.Lynx().Certificate()
 }

@@ -18,9 +18,9 @@ import (
 	"github.com/go-kratos/kratos/v2/middleware/recovery"
 	"github.com/go-kratos/kratos/v2/middleware/tracing"
 	"github.com/go-kratos/kratos/v2/transport/grpc"
-	"github.com/go-lynx/lynx/app"
+	"github.com/go-lynx/lynx"
+	"github.com/go-lynx/lynx-grpc/conf"
 	"github.com/go-lynx/lynx/plugins"
-	"github.com/go-lynx/lynx/plugins/service/grpc/conf"
 	grpcgo "google.golang.org/grpc"
 	"google.golang.org/grpc/health"
 	"google.golang.org/grpc/health/grpc_health_v1"
@@ -621,14 +621,14 @@ func (g *Service) validateTLSConfig() error {
 	}
 
 	// Check if certificate provider is available
-	var cp app.CertificateProvider
+	var cp lynx.CertificateProvider
 	if prov := g.getCertProvider(); prov != nil {
-		if typed, ok := prov.(app.CertificateProvider); ok {
+		if typed, ok := prov.(lynx.CertificateProvider); ok {
 			cp = typed
 		}
 	}
-	if cp == nil && app.Lynx() != nil {
-		cp = app.Lynx().Certificate()
+	if cp == nil && lynx.Lynx() != nil {
+		cp = lynx.Lynx().Certificate()
 	}
 	if cp == nil {
 		return fmt.Errorf("certificate provider not configured")

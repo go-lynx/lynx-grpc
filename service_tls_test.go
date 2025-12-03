@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-lynx/lynx/plugins/service/grpc/conf"
+	"github.com/go-lynx/lynx-grpc/conf"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
