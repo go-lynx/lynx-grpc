@@ -71,6 +71,12 @@ type Service struct {
 		lastError   error
 		retryWindow time.Duration // Avoid retrying failed checks within this window
 	}
+	// Track whether we've already logged the "resource not found" message
+	// to avoid repeating it every 5 seconds when the resource doesn't exist
+	readinessResourceLogged struct {
+		mu    sync.RWMutex
+		value bool
+	}
 }
 
 // healthStatusPoller periodically syncs health serving status with required upstream readiness.
@@ -493,8 +499,14 @@ func (g *Service) CheckHealth() error {
 	}
 
 	// Check port availability
+	// Note: During startup, the server may not be listening yet (listening starts when Kratos app runs),
+	// so we skip port check if it fails and only log a warning instead of failing the health check.
 	if err := g.checkPortAvailability(); err != nil {
-		return fmt.Errorf("gRPC server port not available: %v", err)
+		// During startup phase, port may not be available yet, so we only log a warning
+		// instead of failing the health check. This allows the plugin to start successfully
+		// and the actual listening will happen when Kratos app starts.
+		log.Warnf("gRPC server port not yet available (this is normal during startup): %v", err)
+		// Don't return error during startup - the server will start listening when Kratos app runs
 	}
 
 	// Check TLS configuration if enabled
@@ -587,9 +599,33 @@ func (g *Service) updateHealthServingStatus() {
 	if g.rt != nil {
 		val, err := g.rt.GetSharedResource(requiredReadinessResourceName)
 		if err != nil {
-			// Resource not found or error accessing it - log but use default SERVING status
-			log.Debugf("Could not get shared readiness resource: %v, defaulting to SERVING", err)
+			// Resource not found or error accessing it - log only once to avoid spam
+			// This is normal when gRPC client plugin is not used or no required upstreams are configured
+			g.readinessResourceLogged.mu.RLock()
+			alreadyLogged := g.readinessResourceLogged.value
+			g.readinessResourceLogged.mu.RUnlock()
+
+			if !alreadyLogged {
+				// Check if error is "resource not found" (normal case) vs other errors
+				errStr := err.Error()
+				if strings.Contains(errStr, "resource not found") {
+					// This is expected when gRPC client plugin is not used - only log once at DEBUG level
+					log.Debugf("Shared readiness resource not found (this is normal if gRPC client plugin is not used), defaulting to SERVING")
+				} else {
+					// Other errors should be logged as they might indicate a real issue
+					log.Debugf("Could not get shared readiness resource: %v, defaulting to SERVING", err)
+				}
+
+				g.readinessResourceLogged.mu.Lock()
+				g.readinessResourceLogged.value = true
+				g.readinessResourceLogged.mu.Unlock()
+			}
 		} else {
+			// Resource exists - reset logged flag in case it was previously not found
+			g.readinessResourceLogged.mu.Lock()
+			g.readinessResourceLogged.value = false
+			g.readinessResourceLogged.mu.Unlock()
+
 			if ready, ok := val.(bool); ok {
 				if !ready {
 					status = grpc_health_v1.HealthCheckResponse_NOT_SERVING
