@@ -11,7 +11,7 @@ import (
 
 // init function registers the gRPC service plugin to the global plugin factory.
 // This function is automatically called when the package is imported.
-// It creates a new Service instance and registers it to the package grpc
+// It creates a new Service instance and registers it with the global plugin factory.
 
 func init() {
 	// Call the RegisterPlugin method of the global plugin factory for plugin registration

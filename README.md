@@ -7,28 +7,29 @@ This plugin provides both gRPC service (server) and client functionality for the
 ### gRPC Service (Server)
 - Full gRPC server implementation
 - TLS support with client authentication
-- Built-in middleware support:
-  - Tracing (OpenTelemetry)
-  - Logging
-  - Rate limiting
-  - Request validation
+- Built-in support:
+  - Tracing (OpenTelemetry; extracts trace from metadata)
+  - Request logging (method, duration, trace id)
+  - Per-method Prometheus metrics (FullMethod)
+  - Optional in-process rate limiting, in-flight unary limit, and server-side circuit breaker (see `lynx.grpc.service` options in PRODUCTION_READINESS.md)
+  - Request validation (proto validate)
   - Panic recovery
-  - Metrics collection
 - Dynamic configuration with validation
 - Comprehensive health checking
-- Graceful shutdown
-- Prometheus metrics integration
+- Configurable graceful shutdown
 - Error handling and recovery
-- Configuration validation
 
 ### gRPC Client
 - Full gRPC client implementation
-- Connection pooling and management
-- Automatic retry with backoff
+- Connection pooling and management (with deadlock-safe eviction)
+- Unary interceptors applied per connection:
+  - **Tracing**: injects trace context into outgoing metadata (when `tracing_enabled` is true; works with lynx-tracer)
+  - **Metrics**: per-method and per-target request count and duration
+  - **Circuit breaker**: wraps each RPC so failures are counted and the circuit opens when configured threshold is reached
+  - **Logging**: method, target, duration, and optional trace id
 - Service discovery integration
 - TLS support with client authentication
-- Middleware support for client-side operations
-- Metrics collection for client operations
+- `GetConnection(serviceName)` prefers `subscribe_services` config for that name, then falls back to global config + discovery
 - Load balancing and failover
 
 ## Installation
@@ -101,7 +102,9 @@ lynx:
 - `tls_auth_type`: TLS authentication type (0-4)
 - `connection_pooling`: Enable connection pooling
 - `pool_size`: Connection pool size
-- `services`: Service-specific configurations
+- `tracing_enabled`: Enable trace context injection into gRPC metadata (recommended when using lynx-tracer)
+- `logging_enabled`: Enable request/response logging on the client
+- `services`: Service-specific configurations (deprecated; use `subscribe_services`)
 
 ## Usage
 
@@ -207,14 +210,14 @@ You can monitor the gRPC server's health status through your application's healt
 
 The plugin provides Prometheus metrics for monitoring:
 
-- `grpc_server_up`: Whether the gRPC server is up
-- `grpc_requests_total`: Total number of gRPC requests
-- `grpc_request_duration_seconds`: Duration of gRPC requests
-- `grpc_active_connections`: Number of active gRPC connections
-- `grpc_server_start_time_seconds`: Unix timestamp of server start time
-- `grpc_server_errors_total`: Total number of server errors
+- `lynx_grpc_server_up`: Whether the gRPC server is up (labels: server_name, address)
+- `lynx_grpc_requests_total`: Total number of gRPC requests (labels: method, status; method is the full RPC method name)
+- `lynx_grpc_request_duration_seconds`: Duration of gRPC requests (labels: method)
+- `lynx_grpc_active_connections`: Number of active gRPC connections (labels: server_name)
+- `lynx_grpc_server_start_time_seconds`: Unix timestamp of server start time
+- `lynx_grpc_server_errors_total`: Total number of server errors (labels: error_type)
 
-These metrics are automatically collected and can be scraped by Prometheus for monitoring and alerting.
+Server metrics and request logging are implemented via native gRPC UnaryServerInterceptors so that the full method name and trace id (from context) are available. Client metrics and tracing are implemented via UnaryClientInterceptors; enable `tracing_enabled` in client config to propagate trace context to the server (works with lynx-tracer).
 
 ## Dependencies
 

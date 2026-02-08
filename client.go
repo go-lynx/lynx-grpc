@@ -238,25 +238,29 @@ func (c *ClientPlugin) Close() error {
 	return lastErr
 }
 
-// GetConnection returns a gRPC client connection for the specified service
+// GetConnection returns a gRPC client connection for the specified service.
+// It first tries subscribe_services config for that name; if not found, falls back to createConnection (global config + discovery).
 func (c *ClientPlugin) GetConnection(serviceName string) (*grpc.ClientConn, error) {
 	c.mu.RLock()
 	conn, exists := c.connections[serviceName]
 	c.mu.RUnlock()
 
 	if exists && conn != nil {
-		// Check if connection is still healthy
 		state := conn.GetState()
 		if state == connectivity.Ready || state == connectivity.Idle {
 			return conn, nil
 		}
-		// Connection is not healthy, remove it
 		c.mu.Lock()
 		delete(c.connections, serviceName)
 		c.mu.Unlock()
 	}
 
-	// Create new connection
+	// Prefer subscribe_services config when the service is listed there.
+	subConn, err := c.GetSubscribeServiceConnection(serviceName)
+	if err == nil {
+		return subConn, nil
+	}
+	// Fall back to legacy createConnection (global config + discovery).
 	return c.createConnection(serviceName)
 }
 
@@ -274,18 +278,7 @@ func (c *ClientPlugin) CreateConnection(config ClientConfig) (*grpc.ClientConn, 
 		}
 	}
 
-	// Configure circuit breaker for this service
-	cbConfig := &CircuitBreakerConfig{
-		Enabled:               config.CircuitBreaker,
-		FailureThreshold:      config.CircuitThreshold,
-		RecoveryTimeout:       30 * time.Second,
-		SuccessThreshold:      3,
-		Timeout:               config.Timeout,
-		MaxConcurrentRequests: 10,
-	}
-	circuitBreaker := c.circuitBreakers.GetCircuitBreaker(config.ServiceName, cbConfig)
-
-	// Use connection pool to get/create connection
+	// Use connection pool to get/create connection (circuit breaker is applied per RPC in buildConnection interceptors).
 	conn, err := c.connectionPool.GetConnection(config.ServiceName, func() (*grpc.ClientConn, error) {
 		return c.buildConnection(config)
 	})
@@ -302,23 +295,6 @@ func (c *ClientPlugin) CreateConnection(config ClientConfig) (*grpc.ClientConn, 
 	// Record metrics
 	if c.metrics != nil {
 		c.metrics.RecordConnectionCreated(config.ServiceName)
-	}
-
-	// Test circuit breaker functionality
-	if config.CircuitBreaker {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		err = circuitBreaker.Execute(ctx, func(ctx context.Context) error {
-			// Simple connection state check
-			state := conn.GetState()
-			if state.String() == "SHUTDOWN" || state.String() == "TRANSIENT_FAILURE" {
-				return fmt.Errorf("connection in unhealthy state: %s", state.String())
-			}
-			return nil
-		})
-		if err != nil {
-			log.Errorf("Circuit breaker test failed for service %s: %v", config.ServiceName, err)
-		}
 	}
 
 	return conn, nil
@@ -385,16 +361,18 @@ func (c *ClientPlugin) buildConnection(config ClientConfig) (*grpc.ClientConn, e
 		return nil, fmt.Errorf("neither service discovery nor static endpoint configured for service %s", config.ServiceName)
 	}
 
-	// Add middleware and node filter
-	if len(config.Middleware) > 0 {
-		// Convert kratos middleware to grpc interceptors
-		// Note: This is a simplified conversion, actual implementation may vary
-		// opts = append(opts, grpc.WithChainUnaryInterceptor(config.Middleware...))
+	// Add unary interceptors: tracing, retry, metrics, circuit breaker, logging.
+	unaryChain := c.buildClientInterceptorChain(config)
+	if len(unaryChain) > 0 {
+		opts = append(opts, grpc.WithChainUnaryInterceptor(unaryChain...))
+	}
+	// Add stream interceptors: tracing, metrics, logging.
+	streamChain := c.buildClientStreamInterceptorChain(config)
+	if len(streamChain) > 0 {
+		opts = append(opts, grpc.WithChainStreamInterceptor(streamChain...))
 	}
 	if config.NodeFilter != nil {
-		// Apply node filter to the connection
-		// Note: grpc.WithNodeFilter doesn't exist in standard gRPC, this would need custom implementation
-		// For now, we'll skip this and add it to the middleware chain instead
+		// Node filter is applied via discovery/selector when using service discovery; no gRPC-level option.
 	}
 
 	// Add TLS configuration if enabled

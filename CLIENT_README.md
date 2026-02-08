@@ -11,7 +11,7 @@ This plugin provides comprehensive gRPC client functionality for the Lynx framew
 - **Monitoring**: Comprehensive Prometheus metrics collection
 - **Health Checking**: Built-in health check functionality
 - **Load Balancing**: Support for various load balancing strategies
-- **Middleware Support**: Pluggable middleware for logging, tracing, and metrics
+- **Unary interceptors**: Tracing (context propagation when `tracing_enabled` is true), per-method metrics, circuit breaker per RPC, and request logging with optional trace id
 - **Integration**: Seamless integration with `app/subscribe`
 
 ## Installation
