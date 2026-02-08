@@ -21,6 +21,7 @@ import (
 	"github.com/go-lynx/lynx"
 	"github.com/go-lynx/lynx-grpc/conf"
 	"github.com/go-lynx/lynx/plugins"
+	"golang.org/x/time/rate"
 	grpcgo "google.golang.org/grpc"
 	"google.golang.org/grpc/health"
 	"google.golang.org/grpc/health/grpc_health_v1"
@@ -72,11 +73,12 @@ type Service struct {
 		retryWindow time.Duration // Avoid retrying failed checks within this window
 	}
 	// Track whether we've already logged the "resource not found" message
-	// to avoid repeating it every 5 seconds when the resource doesn't exist
 	readinessResourceLogged struct {
 		mu    sync.RWMutex
 		value bool
 	}
+	// serverOpts holds optional server options (shutdown timeout, toggles, rate limit, inflight). Set in InitializeResources.
+	serverOpts *serverOptsWithLimiter
 }
 
 // healthStatusPoller periodically syncs health serving status with required upstream readiness.
@@ -242,6 +244,49 @@ func (g *Service) InitializeResources(rt plugins.Runtime) error {
 		return fmt.Errorf("invalid gRPC configuration: %v", err)
 	}
 
+	// Load optional server options from the same config prefix (graceful_shutdown_timeout, enable_*, rate_limit, max_inflight_unary).
+	opts := defaultServerOptions()
+	_ = rt.GetConfig().Value(confPrefix).Scan(&opts)
+	sol := &serverOptsWithLimiter{opts: opts}
+	if opts.RateLimit.Enabled && opts.RateLimit.RatePerSecond > 0 {
+		rps := rate.Limit(opts.RateLimit.RatePerSecond)
+		burst := opts.RateLimit.Burst
+		if burst <= 0 {
+			burst = int(opts.RateLimit.RatePerSecond) + 1
+		}
+		sol.limiter = rate.NewLimiter(rps, burst)
+	}
+	if opts.MaxInflightUnary > 0 {
+		sol.inflightSem = make(chan struct{}, opts.MaxInflightUnary)
+	}
+	if opts.CircuitBreaker.Enabled {
+		cbCfg := &CircuitBreakerConfig{
+			Enabled:               true,
+			FailureThreshold:      opts.CircuitBreaker.FailureThreshold,
+			RecoveryTimeout:       opts.CircuitBreaker.RecoveryTimeout,
+			SuccessThreshold:      opts.CircuitBreaker.SuccessThreshold,
+			Timeout:               opts.CircuitBreaker.Timeout,
+			MaxConcurrentRequests: opts.CircuitBreaker.MaxConcurrentRequests,
+		}
+		if cbCfg.FailureThreshold <= 0 {
+			cbCfg.FailureThreshold = 5
+		}
+		if cbCfg.RecoveryTimeout <= 0 {
+			cbCfg.RecoveryTimeout = 30 * time.Second
+		}
+		if cbCfg.SuccessThreshold <= 0 {
+			cbCfg.SuccessThreshold = 3
+		}
+		if cbCfg.Timeout <= 0 {
+			cbCfg.Timeout = 10 * time.Second
+		}
+		if cbCfg.MaxConcurrentRequests <= 0 {
+			cbCfg.MaxConcurrentRequests = 10
+		}
+		sol.serverCircuitBreaker = NewCircuitBreaker("grpc.server", cbCfg, nil)
+	}
+	g.serverOpts = sol
+
 	return nil
 }
 
@@ -254,47 +299,24 @@ func (g *Service) StartupTasks() error {
 
 	var middlewares []middleware.Middleware
 
-	// Add base middleware
+	// Tracing: only when enabled in server options (default true).
+	enableTracing := true
+	if g.serverOpts != nil {
+		enableTracing = g.serverOpts.opts.EnableTracing
+	}
+	if enableTracing {
+		middlewares = append(middlewares, tracing.Server(tracing.WithTracerName(g.getAppName())))
+	}
 	middlewares = append(middlewares,
-		// Configure tracing middleware with application name as tracer name
-		tracing.Server(tracing.WithTracerName(g.getAppName())),
-		// Configure logging middleware using Lynx framework's logger
-		// Note: Commented out due to type assertion issues
-		// logging.Server(g.getLogger().(log.Logger)),
-		// Configure validation middleware
 		validate.ProtoValidate(),
-		// Configure recovery middleware to handle panics during request processing
 		recovery.Recovery(
 			recovery.WithHandler(func(ctx context.Context, req, err interface{}) error {
-				// Log error using context
 				log.Context(ctx).Error("panic recovery", "error", err)
 				g.recordServerError("panic_recovery")
 				return nil
 			}),
 		),
-		// Add metrics middleware - using a custom middleware function
-		func(handler middleware.Handler) middleware.Handler {
-			return func(ctx context.Context, req interface{}) (interface{}, error) {
-				// This is a simplified version - in practice, you'd need to extract
-				// method info from context or use a different approach
-				start := time.Now()
-				resp, err := handler(ctx, req)
-				duration := time.Since(start)
-
-				status := "success"
-				if err != nil {
-					status = "error"
-					g.recordServerError("request_error")
-				}
-
-				// Record basic metrics without method info
-				g.recordRequestMetrics("unknown", duration, status)
-				return resp, err
-			}
-		},
 	)
-	// Configure rate limiting middleware using Lynx framework's control plane HTTP rate limit strategy
-	// If there is a rate limiting middleware, append it
 	if rateLimit := g.getGRPCRateLimit(); rateLimit != nil {
 		if rl, ok := rateLimit.(middleware.Middleware); ok {
 			middlewares = append(middlewares, rl)
@@ -303,11 +325,15 @@ func (g *Service) StartupTasks() error {
 	}
 	gMiddlewares := grpc.Middleware(middlewares...)
 
-	// Define gRPC server options list
+	// Native gRPC interceptors: unary (rate limit, inflight, metrics, logging) and stream (metrics, logging).
+	serverUnaryInterceptors := g.getServerInterceptorChain()
+	serverStreamInterceptors := g.getServerStreamInterceptorChain()
 	opts := []grpc.ServerOption{
+		grpc.Options(
+			grpcgo.ChainUnaryInterceptor(serverUnaryInterceptors...),
+			grpcgo.ChainStreamInterceptor(serverStreamInterceptors...),
+		),
 		gMiddlewares,
-		// Use custom health to register our own health server so we can
-		// programmatically control overall readiness based on required upstreams
 		grpc.CustomHealth(),
 	}
 
@@ -408,10 +434,16 @@ func (g *Service) StartupTasks() error {
 
 // CleanupTasks implements the plugin cleanup interface.
 // It gracefully stops the gRPC server and performs necessary cleanup operations.
-// If the server is nil or already stopped, it will return nil.
+// Timeout is taken from server options (graceful_shutdown_timeout), default 30s.
 func (g *Service) CleanupTasks() error {
-	// Use a timeout context for cleanup to prevent hanging
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	timeout := 30 * time.Second
+	if g.serverOpts != nil {
+		timeout = g.serverOpts.opts.GracefulShutdownTimeout
+		if timeout <= 0 {
+			timeout = 30 * time.Second
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	return g.CleanupTasksContext(ctx)
 }
@@ -422,19 +454,17 @@ func (g *Service) CleanupTasksContext(parentCtx context.Context) error {
 		return nil
 	}
 
-	// Use parent context if it has a deadline, otherwise create timeout context
 	var ctx context.Context
 	var cancel context.CancelFunc
-
 	if _, ok := parentCtx.Deadline(); ok {
-		// Parent context has deadline, use it directly
 		ctx = parentCtx
-		cancel = func() {} // No-op cancel
+		cancel = func() {}
 	} else {
-		// Create timeout context with configured timeout
-		timeout := g.conf.GetTimeout().AsDuration()
-		if timeout <= 0 {
-			timeout = 30 * time.Second // Default timeout
+		timeout := 30 * time.Second
+		if g.serverOpts != nil && g.serverOpts.opts.GracefulShutdownTimeout > 0 {
+			timeout = g.serverOpts.opts.GracefulShutdownTimeout
+		} else if g.conf != nil && g.conf.GetTimeout() != nil && g.conf.GetTimeout().AsDuration() > 0 {
+			timeout = g.conf.GetTimeout().AsDuration()
 		}
 		ctx, cancel = context.WithTimeout(parentCtx, timeout)
 	}

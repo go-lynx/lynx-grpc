@@ -122,8 +122,13 @@ func (p *ConnectionPool) getConnectionWithRetry(serviceName string, createFunc f
 	if !exists {
 		// Check if we've reached the maximum number of services
 		if len(p.services) >= p.maxServices {
-			// Evict least recently used service pool
-			p.evictLRUService()
+			// Evict least recently used service pool without holding lock (avoid deadlock)
+			toEvict := p.getLRUServiceNameLocked()
+			p.mu.Unlock()
+			if toEvict != "" {
+				_ = p.CloseConnection(toEvict)
+			}
+			p.mu.Lock()
 		}
 		// Create new service pool
 		servicePool = &serviceConnectionPool{
@@ -435,28 +440,22 @@ func (s ConnectionSelectionStrategy) String() string {
 	}
 }
 
-// evictLRUService removes the least recently used service pool
-// Avoids deadlock by releasing locks before closing connections
-func (p *ConnectionPool) evictLRUService() {
-	p.mu.RLock()
+// getLRUServiceNameLocked returns the least recently used service name for eviction.
+// Must be called with p.mu held (write lock). Caller must release lock, call
+// CloseConnection(returned name), then re-acquire lock as needed.
+func (p *ConnectionPool) getLRUServiceNameLocked() string {
 	var oldestService string
 	var oldestTime time.Time
-
 	for serviceName, servicePool := range p.services {
 		servicePool.mu.RLock()
-		if oldestService == "" || servicePool.lastUsed.Before(oldestTime) {
-			oldestService = serviceName
-			oldestTime = servicePool.lastUsed
-		}
+		lastUsed := servicePool.lastUsed
 		servicePool.mu.RUnlock()
+		if oldestService == "" || lastUsed.Before(oldestTime) {
+			oldestService = serviceName
+			oldestTime = lastUsed
+		}
 	}
-	p.mu.RUnlock()
-
-	// Release lock before closing connections to avoid deadlock
-	if oldestService != "" {
-		// Use CloseConnection which handles locking properly
-		_ = p.CloseConnection(oldestService)
-	}
+	return oldestService
 }
 
 // cleanupRoutine periodically removes idle connections
