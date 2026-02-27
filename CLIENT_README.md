@@ -19,7 +19,7 @@ This plugin provides comprehensive gRPC client functionality for the Lynx framew
 The gRPC client plugin is automatically registered when imported:
 
 ```go
-import _ "github.com/go-lynx/lynx/plugins/service/grpc"
+import _ "github.com/go-lynx/lynx-grpc"
 ```
 
 ## Configuration
@@ -154,7 +154,7 @@ package main
 import (
     "context"
     "github.com/go-lynx/lynx/app"
-    "github.com/go-lynx/lynx/plugins/service/grpc"
+    "github.com/go-lynx/lynx-grpc"
     pb "your/protobuf/package"
 )
 
@@ -162,8 +162,8 @@ func main() {
     // Initialize your Lynx application
     application := app.NewApplication()
     
-    // Get gRPC client connection
-    conn, err := grpc.GetGrpcClientConnection("user-service")
+    // Get gRPC client connection (pass plugin manager to use the registered plugin instance)
+    conn, err := grpc.GetGrpcClientConnection("user-service", application.GetPluginManager())
     if err != nil {
         log.Fatalf("Failed to get gRPC connection: %v", err)
     }
@@ -199,7 +199,7 @@ import (
     "time"
     
     "github.com/go-lynx/lynx/app"
-    "github.com/go-lynx/lynx/plugins/service/grpc"
+    "github.com/go-lynx/lynx-grpc"
     pb "your/protobuf/package"
 )
 
@@ -220,8 +220,8 @@ func main() {
         MaxConnections: 20,
     }
     
-    // Create connection with custom configuration
-    conn, err := grpc.CreateGrpcClientConnection(config)
+    // Create connection with custom configuration (pass plugin manager to use registered plugin)
+    conn, err := grpc.CreateGrpcClientConnection(config, application.GetPluginManager())
     if err != nil {
         log.Fatalf("Failed to create gRPC connection: %v", err)
     }
@@ -287,7 +287,7 @@ package main
 import (
     "context"
     "github.com/go-kratos/kratos/v2/middleware"
-    "github.com/go-lynx/lynx/plugins/service/grpc"
+    "github.com/go-lynx/lynx-grpc"
 )
 
 func customMiddleware() middleware.Middleware {
@@ -315,7 +315,7 @@ func main() {
         },
     }
     
-    conn, err := grpc.CreateGrpcClientConnection(config)
+    conn, err := grpc.CreateGrpcClientConnection(config, application.GetPluginManager())
     // ...
 }
 ```

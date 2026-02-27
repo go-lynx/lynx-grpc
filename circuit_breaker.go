@@ -115,12 +115,19 @@ func (cb *CircuitBreaker) Execute(ctx context.Context, fn func(context.Context) 
 		defer cancel()
 	}
 
-	// Execute the function
-	err := fn(ctx)
-
-	// Record the result
-	cb.recordResult(err)
-
+	var err error
+	defer func() {
+		p := recover()
+		if p != nil {
+			err = fmt.Errorf("panic: %v", p)
+		}
+		// Always record result so HalfOpen concurrentRequests is decremented even on panic
+		cb.recordResult(err)
+		if p != nil {
+			panic(p)
+		}
+	}()
+	err = fn(ctx)
 	return err
 }
 

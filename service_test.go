@@ -135,7 +135,8 @@ func TestConfigure(t *testing.T) {
 
 	// Test nil configuration
 	err := plugin.Configure(nil)
-	assert.NoError(t, err)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot be nil")
 
 	// Test valid configuration
 	config := &conf.Service{
@@ -200,6 +201,7 @@ func (m mockRuntime) SetEventWorkerPoolSize(size int)                           
 func (m mockRuntime) UnregisterPrivateResource(name string) error                            { return nil }
 func (m mockRuntime) UnregisterResource(name string) error                                   { return nil }
 func (m mockRuntime) UnregisterSharedResource(name string) error                             { return nil }
+func (m mockRuntime) Shutdown()                                                              { return }
 func (m mockRuntime) WithPluginContext(pluginName string) plugins.Runtime                    { return m }
 
 type mockConfig struct{}
