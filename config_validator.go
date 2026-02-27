@@ -204,9 +204,9 @@ func (cv *ConfigValidator) validateSubscribeServices(config *conf.GrpcClient, re
 	}
 }
 
-// validateLegacyServices validates legacy services configuration
+// validateLegacyServices validates legacy static services configuration (config.Services, not subscribe_services).
 func (cv *ConfigValidator) validateLegacyServices(config *conf.GrpcClient, result *ValidationResult) {
-	services := config.GetSubscribeServices()
+	services := config.GetServices()
 	if len(services) == 0 {
 		return
 	}
@@ -217,6 +217,9 @@ func (cv *ConfigValidator) validateLegacyServices(config *conf.GrpcClient, resul
 	for i, service := range services {
 		prefix := fmt.Sprintf("services[%d]", i)
 
+		if service.GetName() == "" {
+			result.AddError(prefix+".name", "", "service name is required for legacy services")
+		}
 		if service.GetEndpoint() == "" {
 			result.AddError(prefix+".endpoint", "", "endpoint is required for legacy services")
 		} else {
@@ -350,6 +353,7 @@ func (cv *ConfigValidator) validateMetadata(serviceName string, metadata map[str
 	for key, value := range metadata {
 		if key == "" {
 			result.AddError("subscribe_services."+serviceName+".metadata", key, "metadata key cannot be empty")
+			continue
 		}
 
 		if len(key) > 255 {

@@ -373,6 +373,51 @@ func (p *ConnectionPool) CloseAll() error {
 	return lastErr
 }
 
+// TotalConnectionCount returns the total number of connections across all services in the pool.
+func (p *ConnectionPool) TotalConnectionCount() int {
+	if !p.enabled {
+		return 0
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	n := 0
+	for _, sp := range p.services {
+		sp.mu.RLock()
+		n += len(sp.connections)
+		sp.mu.RUnlock()
+	}
+	return n
+}
+
+// GetServiceStatus returns a map of service name to connection status summary (e.g. "READY(2),IDLE(1)").
+func (p *ConnectionPool) GetServiceStatus() map[string]string {
+	if !p.enabled {
+		return nil
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	out := make(map[string]string, len(p.services))
+	for name, sp := range p.services {
+		sp.mu.RLock()
+		states := make(map[string]int)
+		for _, pc := range sp.connections {
+			s := pc.conn.GetState().String()
+			states[s]++
+		}
+		var parts []string
+		for s, c := range states {
+			parts = append(parts, fmt.Sprintf("%s(%d)", s, c))
+		}
+		if len(parts) == 0 {
+			out[name] = "0 connections"
+		} else {
+			out[name] = fmt.Sprintf("pool:%d %v", len(sp.connections), parts)
+		}
+		sp.mu.RUnlock()
+	}
+	return out
+}
+
 // GetStats returns statistics about the connection pool
 func (p *ConnectionPool) GetStats() map[string]interface{} {
 	if !p.enabled {

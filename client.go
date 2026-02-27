@@ -576,24 +576,38 @@ func (c *ClientPlugin) getRetryMiddleware() middleware.Middleware {
 	}
 }
 
-// GetConnectionCount returns the number of active connections
+// GetConnectionCount returns the total number of active connections (legacy map + connection pool).
 func (c *ClientPlugin) GetConnectionCount() int {
 	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return len(c.connections)
+	legacyCount := len(c.connections)
+	c.mu.RUnlock()
+	poolCount := 0
+	if c.connectionPool != nil {
+		poolCount = c.connectionPool.TotalConnectionCount()
+	}
+	// When pooling is enabled, connections are in the pool and also stored in c.connections for compatibility;
+	// avoid double-counting by returning the larger of the two (typically pool has the real count).
+	if poolCount > legacyCount {
+		return poolCount
+	}
+	return legacyCount
 }
 
-// GetConnectionStatus returns the status of all connections
+// GetConnectionStatus returns the status of all connections (legacy map and pool services merged).
 func (c *ClientPlugin) GetConnectionStatus() map[string]string {
 	c.mu.RLock()
-	defer c.mu.RUnlock()
-
 	s := make(map[string]string)
 	for serviceName, conn := range c.connections {
 		if conn != nil {
 			s[serviceName] = conn.GetState().String()
 		} else {
 			s[serviceName] = "nil"
+		}
+	}
+	c.mu.RUnlock()
+	if c.connectionPool != nil {
+		for name, status := range c.connectionPool.GetServiceStatus() {
+			s[name] = status
 		}
 	}
 	return s
@@ -642,9 +656,8 @@ func (c *ClientPlugin) SetDiscovery(discovery registry.Discovery) {
 	log.Infof("Service discovery set for gRPC client plugin")
 }
 
-// GetSubscribeServiceConnection creates a connection for a subscribe service
-func (c *ClientPlugin) GetSubscribeServiceConnection(serviceName string) (*grpc.ClientConn, error) {
-	// Find service configuration
+// buildSubscribeServiceConfig builds ClientConfig for a subscribe service by name (for use by GetSubscribeServiceConnection and CheckRequiredServices).
+func (c *ClientPlugin) buildSubscribeServiceConfig(serviceName string) (ClientConfig, error) {
 	var serviceConfig *conf.SubscribeService
 	for _, svc := range c.conf.SubscribeServices {
 		if svc.Name == serviceName {
@@ -652,12 +665,10 @@ func (c *ClientPlugin) GetSubscribeServiceConnection(serviceName string) (*grpc.
 			break
 		}
 	}
-
 	if serviceConfig == nil {
-		return nil, fmt.Errorf("service %s not found in subscribe services configuration", serviceName)
+		return ClientConfig{}, fmt.Errorf("service %s not found in subscribe services configuration", serviceName)
 	}
 
-	// Build client configuration
 	config := ClientConfig{
 		ServiceName:      serviceConfig.Name,
 		Discovery:        c.discovery,
@@ -671,47 +682,51 @@ func (c *ClientPlugin) GetSubscribeServiceConnection(serviceName string) (*grpc.
 		CircuitThreshold: int(serviceConfig.CircuitBreakerThreshold),
 	}
 
-	// Set timeout with nil checks
 	if serviceConfig.Timeout != nil {
 		config.Timeout = serviceConfig.Timeout.AsDuration()
 	} else if c.conf.DefaultTimeout != nil {
 		config.Timeout = c.conf.DefaultTimeout.AsDuration()
 	} else {
-		config.Timeout = 10 * time.Second // Default fallback
+		config.Timeout = 10 * time.Second
 	}
-
-	// Set endpoint only if service discovery is not available
 	if c.discovery == nil && serviceConfig.Endpoint != "" {
 		config.Endpoint = serviceConfig.Endpoint
 		log.Infof("Using static endpoint for service %s: %s", serviceName, serviceConfig.Endpoint)
 	} else if c.discovery != nil {
 		log.Infof("Using service discovery for service %s", serviceName)
 	} else if serviceConfig.Required {
-		return nil, fmt.Errorf("service %s is required but has no endpoint and no service discovery available", serviceName)
+		return ClientConfig{}, fmt.Errorf("service %s is required but has no endpoint and no service discovery available", serviceName)
 	}
-
-	// Set default values from global configuration with nil checks
 	if c.conf.DefaultKeepAlive != nil {
 		config.KeepAlive = c.conf.DefaultKeepAlive.AsDuration()
 	} else {
-		config.KeepAlive = 30 * time.Second // Default fallback
+		config.KeepAlive = 30 * time.Second
 	}
 	if c.conf.RetryBackoff != nil {
 		config.RetryBackoff = c.conf.RetryBackoff.AsDuration()
 	} else {
-		config.RetryBackoff = 1 * time.Second // Default fallback
+		config.RetryBackoff = 1 * time.Second
 	}
 	if c.conf.MaxConnections > 0 {
 		config.MaxConnections = int(c.conf.MaxConnections)
 	} else {
-		config.MaxConnections = 10 // Default fallback
+		config.MaxConnections = 10
 	}
 	config.Middleware = c.getDefaultMiddleware()
+	return config, nil
+}
 
+// GetSubscribeServiceConnection creates a connection for a subscribe service (uses pool when enabled).
+func (c *ClientPlugin) GetSubscribeServiceConnection(serviceName string) (*grpc.ClientConn, error) {
+	config, err := c.buildSubscribeServiceConfig(serviceName)
+	if err != nil {
+		return nil, err
+	}
 	return c.CreateConnection(config)
 }
 
-// CheckRequiredServices checks if all required services are available at startup
+// CheckRequiredServices checks if all required services are available at startup.
+// Uses a temporary connection (buildConnection only, not pooled) so that closing it does not corrupt the connection pool.
 func (c *ClientPlugin) CheckRequiredServices() error {
 	for _, svc := range c.conf.SubscribeServices {
 		if !svc.Required {
@@ -720,16 +735,18 @@ func (c *ClientPlugin) CheckRequiredServices() error {
 
 		log.Infof("Checking required service: %s", svc.Name)
 
-		// Try to create connection to verify service availability
-		conn, err := c.GetSubscribeServiceConnection(svc.Name)
+		config, err := c.buildSubscribeServiceConfig(svc.Name)
+		if err != nil {
+			return fmt.Errorf("required service %s config: %w", svc.Name, err)
+		}
+
+		// Use buildConnection only (no pool) so closing does not leave a closed conn in the pool
+		conn, err := c.buildConnection(config)
 		if err != nil {
 			return fmt.Errorf("required service %s is not available: %w", svc.Name, err)
 		}
-
-		// Close the test connection
 		if conn != nil {
-			err := conn.Close()
-			if err != nil {
+			if err := conn.Close(); err != nil {
 				log.Error(err)
 				return err
 			}

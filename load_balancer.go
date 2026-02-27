@@ -106,6 +106,9 @@ func (lb *LoadBalancer) SelectNode(ctx context.Context, serviceName string) (sel
 	}
 
 	// Get service instances from discovery
+	if lb.discovery == nil {
+		return nil, nil, fmt.Errorf("discovery is nil, cannot get instances for service %s", serviceName)
+	}
 	instances, err := lb.discovery.GetService(ctx, serviceName)
 	if err != nil {
 		if lb.metrics != nil {
