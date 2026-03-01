@@ -30,6 +30,8 @@ type TLSConfig struct {
 	KeyFile string `json:"key_file"`
 	// CAFile is the path to the CA certificate file
 	CAFile string `json:"ca_file"`
+	// RootCACertPEM is the root CA certificate in PEM format, set from certificate provider (e.g. for mTLS with self-signed certs)
+	RootCACertPEM []byte `json:"-"`
 	// ClientAuth specifies the client authentication type
 	ClientAuth tls.ClientAuthType `json:"client_auth"`
 	// MinVersion specifies the minimum TLS version
@@ -175,13 +177,12 @@ func (tm *TLSManager) validateConfig(config *TLSConfig) error {
 		}
 	}
 
-	// Validate CA file if specified
+	// Validate CA certificate (from file or RootCACertPEM)
 	if config.CAFile != "" {
 		if !tm.fileExists(config.CAFile) {
 			return fmt.Errorf("CA file does not exist: %s", config.CAFile)
 		}
 
-		// Validate CA certificate can be loaded
 		caCert, err := os.ReadFile(config.CAFile)
 		if err != nil {
 			return fmt.Errorf("failed to read CA certificate: %w", err)
@@ -190,6 +191,11 @@ func (tm *TLSManager) validateConfig(config *TLSConfig) error {
 		caCertPool := x509.NewCertPool()
 		if !caCertPool.AppendCertsFromPEM(caCert) {
 			return fmt.Errorf("failed to parse CA certificate")
+		}
+	} else if len(config.RootCACertPEM) > 0 {
+		caCertPool := x509.NewCertPool()
+		if !caCertPool.AppendCertsFromPEM(config.RootCACertPEM) {
+			return fmt.Errorf("failed to parse Root CA certificate from provider")
 		}
 	}
 
@@ -253,13 +259,18 @@ func (tm *TLSManager) buildCredentials(config *TLSConfig) (credentials.Transport
 		tlsConfig.Certificates = []tls.Certificate{cert}
 	}
 
-	// Load CA certificate if specified
+	// Load CA certificate from file or from certificate provider (RootCACertPEM)
+	var caCert []byte
 	if config.CAFile != "" {
-		caCert, err := os.ReadFile(config.CAFile)
+		var err error
+		caCert, err = os.ReadFile(config.CAFile)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read CA certificate: %w", err)
 		}
-
+	} else if len(config.RootCACertPEM) > 0 {
+		caCert = config.RootCACertPEM
+	}
+	if len(caCert) > 0 {
 		caCertPool := x509.NewCertPool()
 		if !caCertPool.AppendCertsFromPEM(caCert) {
 			return nil, fmt.Errorf("failed to parse CA certificate")
