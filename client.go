@@ -454,6 +454,13 @@ func (c *ClientPlugin) buildTLSConfig(config ClientConfig) (credentials.Transpor
 		},
 	}
 
+	// Inject Root CA from certificate provider for server cert verification (e.g. self-signed certs)
+	if cp, ok := certProvider.(lynx.CertificateProvider); ok {
+		if rootCA := cp.GetRootCACertificate(); len(rootCA) > 0 {
+			tlsConfig.RootCACertPEM = rootCA
+		}
+	}
+
 	// Set service-specific TLS configuration
 	err := c.tlsManager.SetServiceConfig(config.ServiceName, tlsConfig)
 	if err != nil {
