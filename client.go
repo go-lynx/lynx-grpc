@@ -196,6 +196,11 @@ func (c *ClientPlugin) StartupTasks() error {
 	return nil
 }
 
+// CleanupTasks is called by the framework during plugin Stop to release all resources.
+func (c *ClientPlugin) CleanupTasks() error {
+	return c.Close()
+}
+
 // Close closes all connections and cleans up resources
 func (c *ClientPlugin) Close() error {
 	c.mu.Lock()
@@ -562,19 +567,21 @@ func (c *ClientPlugin) getRetryMiddleware() middleware.Middleware {
 					break
 				}
 
-				// Calculate delay with exponential backoff
-				delay := c.calculateRetryDelay(attempt, baseDelay, maxDelay)
+			// Calculate delay with exponential backoff
+			delay := c.calculateRetryDelay(attempt, baseDelay, maxDelay)
 
-				// Wait before retry, but respect context cancellation
-				select {
-				case <-ctx.Done():
-					if c.metrics != nil {
-						c.metrics.RecordRetry("unknown", "context_cancelled", fmt.Sprintf("%d", attempt))
-					}
-					return nil, ctx.Err()
-				case <-time.After(delay):
-					// Continue to next retry
+			// Wait before retry, but respect context cancellation
+			retryTimer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				retryTimer.Stop()
+				if c.metrics != nil {
+					c.metrics.RecordRetry("unknown", "context_cancelled", fmt.Sprintf("%d", attempt))
 				}
+				return nil, ctx.Err()
+			case <-retryTimer.C:
+				// Continue to next retry
+			}
 			}
 
 			// All retries exhausted, return last error
