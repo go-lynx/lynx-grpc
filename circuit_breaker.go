@@ -176,7 +176,7 @@ func (cb *CircuitBreaker) recordResult(err error) {
 
 	now := time.Now()
 
-	if cb.state == CircuitBreakerHalfOpen {
+	if cb.state == CircuitBreakerHalfOpen && cb.concurrentRequests > 0 {
 		cb.concurrentRequests--
 	}
 

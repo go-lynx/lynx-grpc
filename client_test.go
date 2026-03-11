@@ -8,6 +8,7 @@ import (
 	"github.com/go-lynx/lynx-grpc/conf"
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/durationpb"
 )
 
@@ -18,6 +19,36 @@ func TestNewGrpcClientPlugin(t *testing.T) {
 	assert.Equal(t, "v2.0.0", plugin.Version())
 	assert.Equal(t, "gRPC client plugin for Lynx framework", plugin.Description())
 	assert.Equal(t, 20, plugin.Weight())
+}
+
+func TestClientPlugin_CleanupTasks(t *testing.T) {
+	// Build a minimal ClientPlugin directly to avoid prometheus re-registration panics
+	// that happen when NewGrpcClientPlugin() is called multiple times in the same process.
+	pool := NewConnectionPool(10, 5, 5*time.Minute, false, nil)
+	plugin := &ClientPlugin{
+		connections:    make(map[string]*grpc.ClientConn),
+		connectionPool: pool,
+	}
+
+	t.Run("empty plugin", func(t *testing.T) {
+		err := plugin.CleanupTasks()
+		assert.NoError(t, err)
+	})
+
+	t.Run("closes legacy connections", func(t *testing.T) {
+		conn, err := grpc.NewClient("passthrough:///localhost:0",
+			grpc.WithTransportCredentials(insecure.NewCredentials()))
+		assert.NoError(t, err)
+
+		plugin.connections["test-svc"] = conn
+
+		err = plugin.CleanupTasks()
+		assert.NoError(t, err)
+
+		plugin.mu.RLock()
+		assert.Empty(t, plugin.connections)
+		plugin.mu.RUnlock()
+	})
 }
 
 func TestClientConfig(t *testing.T) {

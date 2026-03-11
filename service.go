@@ -79,6 +79,8 @@ type Service struct {
 	}
 	// serverOpts holds optional server options (shutdown timeout, toggles, rate limit, inflight). Set in InitializeResources.
 	serverOpts *serverOptsWithLimiter
+	// confMu protects conf pointer replacement in Configure; mirrors lynx-http's approach.
+	confMu sync.Mutex
 }
 
 // healthStatusPoller periodically syncs health serving status with required upstream readiness.
@@ -100,55 +102,16 @@ func (g *Service) healthStatusPoller(ctx context.Context) {
 	}
 }
 
-// updateHealthServingStatusWithContext updates health status with context support
-// Ensures goroutine exits when context is cancelled to prevent leaks
+// updateHealthServingStatusWithContext updates health status with context support.
+// updateHealthServingStatus performs only in-memory mutex operations and map lookups
+// (no I/O, no blocking calls), so it completes in microseconds. A simple context
+// pre-check is sufficient; no goroutine/timeout wrapper is needed.
 func (g *Service) updateHealthServingStatusWithContext(ctx context.Context) {
-	// Use a channel to ensure we don't block indefinitely
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		// Check context before execution
-		select {
-		case <-ctx.Done():
-			return
-		default:
-			// Perform update with context awareness
-			// Use a separate goroutine context to ensure we can cancel if needed
-			updateCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
-			defer cancel()
-
-			// Create a channel to signal completion
-			updateDone := make(chan struct{})
-			go func() {
-				defer close(updateDone)
-				g.updateHealthServingStatus()
-			}()
-
-			// Wait for update or timeout
-			select {
-			case <-updateCtx.Done():
-				// Context cancelled or timed out
-				return
-			case <-updateDone:
-				// Update completed
-				return
-			}
-		}
-	}()
-
 	select {
 	case <-ctx.Done():
-		// Timeout or cancellation - log but don't fail
-		log.Warnf("Health status update timed out or was cancelled")
-		// Wait briefly for goroutine to exit (non-blocking)
-		select {
-		case <-done:
-		case <-time.After(50 * time.Millisecond):
-			// Goroutine should complete quickly, but log if it doesn't
-			log.Debugf("Health status update goroutine may still be running")
-		}
-	case <-done:
-		// Update completed successfully
+		return
+	default:
+		g.updateHealthServingStatus()
 	}
 }
 
@@ -488,6 +451,7 @@ func (g *Service) CleanupTasksContext(parentCtx context.Context) error {
 // Configure allows runtime configuration updates for the gRPC server.
 // It accepts an interface{} parameter that should contain the new configuration
 // and updates the server settings accordingly.
+// Configure is concurrency-safe: the conf pointer swap is protected by confMu.
 func (g *Service) Configure(c any) error {
 	if c == nil {
 		return fmt.Errorf("configuration cannot be nil")
@@ -499,13 +463,14 @@ func (g *Service) Configure(c any) error {
 		return fmt.Errorf("invalid configuration type: expected *conf.Service, got %T", c)
 	}
 
-	// Save the old configuration for rollback
+	g.confMu.Lock()
+	defer g.confMu.Unlock()
+
 	oldConf := g.conf
 	g.conf = grpcConf
 
 	// Validate the new configuration
 	if err := g.validateConfig(); err != nil {
-		// Invalid configuration; roll back to the old one
 		g.conf = oldConf
 		log.Errorf("Invalid new gRPC configuration, rolling back: %v", err)
 		return fmt.Errorf("gRPC configuration validation failed: %w", err)
