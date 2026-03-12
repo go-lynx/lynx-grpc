@@ -34,7 +34,7 @@ const (
 	pluginName = "grpc.service"
 
 	// pluginVersion indicates the current version of the plugin
-	pluginVersion = "v2.0.0"
+	pluginVersion = "v1.5.5"
 
 	// pluginDescription provides a brief description of the plugin's functionality
 	pluginDescription = "grpc service plugin for lynx framework"
