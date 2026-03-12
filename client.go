@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"strings"
 	"sync"
 	"time"
 
@@ -63,18 +64,19 @@ func (c *ClientPlugin) publishRequiredReadiness(ready bool) {
 
 // ClientConfig represents configuration for a specific gRPC client connection
 type ClientConfig struct {
-	ServiceName      string
-	Endpoint         string
-	Discovery        registry.Discovery
-	TLS              bool
-	TLSAuthType      int32
-	Timeout          time.Duration
-	KeepAlive        time.Duration
-	MaxRetries       int
-	RetryBackoff     time.Duration
-	MaxConnections   int
+	ServiceName    string
+	Endpoint       string
+	Discovery      registry.Discovery
+	TLS            bool
+	TLSAuthType    int32
+	Timeout        time.Duration
+	KeepAlive      time.Duration
+	MaxRetries     int
+	RetryBackoff   time.Duration
+	MaxConnections int
+	// Middleware is reserved for future Kratos middleware; buildConnection uses gRPC interceptors only (tracing, retry, metrics, circuit breaker, logging).
 	Middleware       []middleware.Middleware
-	NodeFilter       selector.NodeFilter
+	NodeFilter       selector.NodeFilter // Applied in LoadBalancer.SelectNode when configured
 	Required         bool
 	Metadata         map[string]string
 	LoadBalancer     string
@@ -97,7 +99,7 @@ func NewGrpcClientPlugin() *ClientPlugin {
 	circuitBreakers := NewCircuitBreakerManager(metrics)
 
 	return &ClientPlugin{
-		BasePlugin:      plugins.NewBasePlugin("grpc.client", "grpc.client", "gRPC client plugin for Lynx framework", "v2.0.0", "lynx.grpc.client", 20),
+		BasePlugin:      plugins.NewBasePlugin("grpc.client", "grpc.client", "gRPC client plugin for Lynx framework", "v1.5.5", "lynx.grpc.client", 20),
 		conf:            &conf.GrpcClient{},
 		connections:     make(map[string]*grpc.ClientConn),
 		connectionPool:  connectionPool,
@@ -201,6 +203,18 @@ func (c *ClientPlugin) CleanupTasks() error {
 	return c.Close()
 }
 
+// CloseServiceConnection closes connections for the given service (pool and legacy map).
+// Use this when closing a single service so the next GetConnection creates a fresh connection.
+func (c *ClientPlugin) CloseServiceConnection(serviceName string) error {
+	c.mu.Lock()
+	delete(c.connections, serviceName)
+	c.mu.Unlock()
+	if c.connectionPool != nil {
+		return c.connectionPool.CloseConnection(serviceName)
+	}
+	return nil
+}
+
 // Close closes all connections and cleans up resources
 func (c *ClientPlugin) Close() error {
 	c.mu.Lock()
@@ -274,10 +288,11 @@ func (c *ClientPlugin) CreateConnection(config ClientConfig) (*grpc.ClientConn, 
 	// Configure load balancer for this service if needed
 	if config.Discovery != nil && config.LoadBalancer != "" {
 		lbConfig := &LoadBalancerConfig{
-			Strategy: LoadBalancerType(config.LoadBalancer),
-			Metadata: config.Metadata,
+			Strategy:   LoadBalancerType(config.LoadBalancer),
+			Metadata:   config.Metadata,
+			NodeFilter: config.NodeFilter,
 		}
-		c.loadBalancer.discovery = config.Discovery
+		c.loadBalancer.SetDiscovery(config.Discovery)
 		if err := c.loadBalancer.ConfigureService(config.ServiceName, lbConfig); err != nil {
 			log.Errorf("Failed to configure load balancer for service %s: %v", config.ServiceName, err)
 		}
@@ -347,15 +362,47 @@ func (c *ClientPlugin) createConnection(serviceName string) (*grpc.ClientConn, e
 	return c.CreateConnection(config)
 }
 
+// normalizeGrpcTarget converts a registry endpoint (e.g. "grpc://host:port") to a gRPC dial target.
+// Uses "passthrough:///" for direct connection to avoid extra DNS resolution.
+func normalizeGrpcTarget(addr string) string {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return ""
+	}
+	for _, prefix := range []string{"grpc://", "grpcs://", "http://", "https://"} {
+		if strings.HasPrefix(addr, prefix) {
+			addr = addr[len(prefix):]
+			break
+		}
+	}
+	if addr == "" {
+		return ""
+	}
+	return "passthrough:///" + addr
+}
+
 // buildConnection builds a gRPC client connection with the given configuration
 func (c *ClientPlugin) buildConnection(config ClientConfig) (*grpc.ClientConn, error) {
 	// Build client options
 	var opts []grpc.DialOption
 
-	// Set endpoint based on configuration
+	// Set endpoint based on configuration: LoadBalancer path (select one node) or discovery/static
 	var target string
-	if config.Discovery != nil {
-		// Use service discovery - simplified approach
+	if config.Discovery != nil && config.LoadBalancer != "" {
+		// Use LoadBalancer to select one node and dial it (connection-level load balancing)
+		lbCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		node, _, err := c.loadBalancer.SelectNode(lbCtx, config.ServiceName)
+		if err != nil {
+			return nil, fmt.Errorf("load balancer select node for %s: %w", config.ServiceName, err)
+		}
+		target = normalizeGrpcTarget(node.Address())
+		if target == "" {
+			return nil, fmt.Errorf("empty address from node for service %s", config.ServiceName)
+		}
+		// Single address per connection; pool may have multiple connections to different nodes
+	} else if config.Discovery != nil {
+		// Use service discovery (resolver returns all instances, gRPC round_robin)
 		opts = append(opts, grpc.WithDefaultServiceConfig(`{"loadBalancingPolicy":"round_robin"}`))
 		target = fmt.Sprintf("discovery:///%s", config.ServiceName)
 	} else if config.Endpoint != "" {
@@ -438,10 +485,12 @@ func (c *ClientPlugin) buildTLSConfig(config ClientConfig) (credentials.Transpor
 		return nil, fmt.Errorf("certificate provider not configured")
 	}
 
-	// Create TLS manager if not exists
+	// Create TLS manager if not exists (concurrency-safe)
+	c.mu.Lock()
 	if c.tlsManager == nil {
 		c.tlsManager = NewTLSManager()
 	}
+	c.mu.Unlock()
 
 	// Build TLS configuration based on auth type
 	tlsConfig := &TLSConfig{
@@ -567,21 +616,21 @@ func (c *ClientPlugin) getRetryMiddleware() middleware.Middleware {
 					break
 				}
 
-			// Calculate delay with exponential backoff
-			delay := c.calculateRetryDelay(attempt, baseDelay, maxDelay)
+				// Calculate delay with exponential backoff
+				delay := c.calculateRetryDelay(attempt, baseDelay, maxDelay)
 
-			// Wait before retry, but respect context cancellation
-			retryTimer := time.NewTimer(delay)
-			select {
-			case <-ctx.Done():
-				retryTimer.Stop()
-				if c.metrics != nil {
-					c.metrics.RecordRetry("unknown", "context_cancelled", fmt.Sprintf("%d", attempt))
+				// Wait before retry, but respect context cancellation
+				retryTimer := time.NewTimer(delay)
+				select {
+				case <-ctx.Done():
+					retryTimer.Stop()
+					if c.metrics != nil {
+						c.metrics.RecordRetry("unknown", "context_cancelled", fmt.Sprintf("%d", attempt))
+					}
+					return nil, ctx.Err()
+				case <-retryTimer.C:
+					// Continue to next retry
 				}
-				return nil, ctx.Err()
-			case <-retryTimer.C:
-				// Continue to next retry
-			}
 			}
 
 			// All retries exhausted, return last error
@@ -835,5 +884,8 @@ func (c *ClientPlugin) calculateRetryDelay(attempt int, baseDelay, maxDelay time
 // getCertProvider gets the certificate provider from the application
 func (c *ClientPlugin) getCertProvider() interface{} {
 	// Get certificate provider from the Lynx application
+	if lynx.Lynx() == nil {
+		return nil
+	}
 	return lynx.Lynx().Certificate()
 }

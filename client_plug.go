@@ -47,7 +47,10 @@ func GetGrpcClientPlugin(pluginManager interface{}) (*ClientPlugin, error) {
 	return clientPlugin, nil
 }
 
-// GetOrCreateGrpcClientPlugin gets existing plugin or creates a new one
+// GetOrCreateGrpcClientPlugin gets existing plugin or creates a new one.
+//
+// Deprecated: Do not use in production. The returned instance may be uninitialized (no config, no connection pool).
+// Use GetGrpcClientPlugin(pluginManager) and GetConnection(serviceName) instead, with the application's PluginManager.
 func GetOrCreateGrpcClientPlugin() *ClientPlugin {
 	plugin, err := factory.GlobalTypedFactory().CreatePlugin("grpc.client")
 	if err == nil {
@@ -80,14 +83,15 @@ func CreateGrpcClientConnection(config ClientConfig, pluginManager interface{}) 
 	return plugin.CreateConnection(config)
 }
 
-// CloseGrpcClientConnection closes a gRPC client connection
+// CloseGrpcClientConnection closes a gRPC client connection for the given service
+// (pool and legacy map), so the next GetConnection will create a new connection.
 func CloseGrpcClientConnection(serviceName string, pluginManager interface{}) error {
 	plugin, err := GetGrpcClientPlugin(pluginManager)
 	if err != nil {
 		return err
 	}
 
-	return plugin.connectionPool.CloseConnection(serviceName)
+	return plugin.CloseServiceConnection(serviceName)
 }
 
 // GetGrpcClientConnectionStatus returns the status of all gRPC client connections

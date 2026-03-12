@@ -36,9 +36,10 @@ const (
 
 // LoadBalancerConfig contains configuration for load balancing
 type LoadBalancerConfig struct {
-	Strategy LoadBalancerType  `json:"strategy"`
-	Filters  []string          `json:"filters"`
-	Metadata map[string]string `json:"metadata"`
+	Strategy   LoadBalancerType    `json:"strategy"`
+	Filters    []string            `json:"filters"`
+	Metadata   map[string]string   `json:"metadata"`
+	NodeFilter selector.NodeFilter `json:"-"` // Optional programmatic filter (e.g. from ClientConfig); not serialized
 }
 
 // LoadBalancer manages load balancing for gRPC services
@@ -58,6 +59,13 @@ func NewLoadBalancer(discovery registry.Discovery, metrics *ClientMetrics) *Load
 		configs:   make(map[string]*LoadBalancerConfig),
 		metrics:   metrics,
 	}
+}
+
+// SetDiscovery sets the discovery instance in a concurrency-safe way.
+func (lb *LoadBalancer) SetDiscovery(discovery registry.Discovery) {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+	lb.discovery = discovery
 }
 
 // ConfigureService configures load balancing for a specific service
@@ -105,11 +113,14 @@ func (lb *LoadBalancer) SelectNode(ctx context.Context, serviceName string) (sel
 		lb.mu.Unlock()
 	}
 
-	// Get service instances from discovery
-	if lb.discovery == nil {
+	// Get service instances from discovery (read under lock to avoid race with SetDiscovery)
+	lb.mu.RLock()
+	discovery := lb.discovery
+	lb.mu.RUnlock()
+	if discovery == nil {
 		return nil, nil, fmt.Errorf("discovery is nil, cannot get instances for service %s", serviceName)
 	}
-	instances, err := lb.discovery.GetService(ctx, serviceName)
+	instances, err := discovery.GetService(ctx, serviceName)
 	if err != nil {
 		if lb.metrics != nil {
 			lb.metrics.RecordLoadBalancerError(serviceName, "discovery_failed")
@@ -124,11 +135,33 @@ func (lb *LoadBalancer) SelectNode(ctx context.Context, serviceName string) (sel
 		return nil, nil, fmt.Errorf("no instances available for service %s", serviceName)
 	}
 
-	// Convert registry instances to selector nodes
+	// Convert registry instances to selector nodes (skip instances with no endpoints)
 	nodes := make([]selector.Node, 0, len(instances))
 	for _, instance := range instances {
-		n := &registryNode{instance: instance}
-		nodes = append(nodes, n)
+		if instance == nil || len(instance.Endpoints) == 0 {
+			continue
+		}
+		nodes = append(nodes, &registryNode{instance: instance})
+	}
+	if len(nodes) == 0 {
+		if lb.metrics != nil {
+			lb.metrics.RecordLoadBalancerError(serviceName, "no_instances_with_endpoints")
+		}
+		return nil, nil, fmt.Errorf("no instances with valid endpoints for service %s", serviceName)
+	}
+
+	// Apply optional NodeFilter (e.g. from ClientConfig); signature is (ctx, nodes) -> filtered nodes
+	lb.mu.RLock()
+	cfg := lb.configs[serviceName]
+	lb.mu.RUnlock()
+	if cfg != nil && cfg.NodeFilter != nil {
+		nodes = cfg.NodeFilter(ctx, nodes)
+		if len(nodes) == 0 {
+			if lb.metrics != nil {
+				lb.metrics.RecordLoadBalancerError(serviceName, "no_instances_after_filter")
+			}
+			return nil, nil, fmt.Errorf("no instances left for service %s after node filter", serviceName)
+		}
 	}
 
 	// Apply nodes to selector
@@ -245,6 +278,8 @@ func (lb *LoadBalancer) createSelector(config *LoadBalancerConfig) (selector.Sel
 		builder = wrr.NewBuilder()
 	case LoadBalancerP2C:
 		builder = p2c.NewBuilder()
+	case LoadBalancerConsistentHash:
+		return NewConsistentHashSelector(defaultHash), nil
 	default:
 		// Default to random if strategy is unknown
 		builder = random.NewBuilder()
@@ -292,6 +327,9 @@ type registryNode struct {
 }
 
 func (n *registryNode) Scheme() string {
+	if n == nil || n.instance == nil {
+		return "grpc"
+	}
 	if len(n.instance.Endpoints) > 0 {
 		// Extract scheme from endpoint (e.g., "grpc://" from "grpc://localhost:8080")
 		for _, endpoint := range n.instance.Endpoints {
@@ -306,17 +344,24 @@ func (n *registryNode) Scheme() string {
 }
 
 func (n *registryNode) Address() string {
-	if len(n.instance.Endpoints) > 0 {
-		return n.instance.Endpoints[0]
+	if n == nil || n.instance == nil || len(n.instance.Endpoints) == 0 {
+		return ""
 	}
-	return ""
+	return n.instance.Endpoints[0]
 }
 
 func (n *registryNode) ServiceName() string {
+	if n == nil || n.instance == nil {
+		return ""
+	}
 	return n.instance.Name
 }
 
 func (n *registryNode) InitialWeight() *int64 {
+	if n == nil || n.instance == nil {
+		defaultWeight := int64(100)
+		return &defaultWeight
+	}
 	// Try to get weight from metadata
 	if weightStr, exists := n.instance.Metadata["weight"]; exists {
 		if weight, err := strconv.ParseInt(weightStr, 10, 64); err == nil && weight > 0 {
@@ -330,10 +375,16 @@ func (n *registryNode) InitialWeight() *int64 {
 
 // Metadata returns the metadata of the node
 func (n *registryNode) Metadata() map[string]string {
+	if n == nil || n.instance == nil {
+		return nil
+	}
 	return n.instance.Metadata
 }
 
 func (n *registryNode) Version() string {
+	if n == nil || n.instance == nil {
+		return ""
+	}
 	if version, exists := n.instance.Metadata["version"]; exists {
 		return version
 	}
@@ -384,7 +435,7 @@ func NewConsistentHashSelector(hashFunc func(string) uint32) *ConsistentHashSele
 	}
 }
 
-func (s *ConsistentHashSelector) Select(ctx context.Context, opts ...selector.SelectOption) (selector.Node, func(context.Context, selector.DoneInfo), error) {
+func (s *ConsistentHashSelector) Select(ctx context.Context, opts ...selector.SelectOption) (selector.Node, selector.DoneFunc, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -403,7 +454,7 @@ func (s *ConsistentHashSelector) Select(ctx context.Context, opts ...selector.Se
 	index := int(hash) % len(s.nodes)
 	selectedNode := s.nodes[index]
 
-	done := func(ctx context.Context, di selector.DoneInfo) {
+	var done selector.DoneFunc = func(ctx context.Context, di selector.DoneInfo) {
 		// Record selection metrics or handle completion
 	}
 
