@@ -1,43 +1,43 @@
-# lynx-grpc 生产可用性说明
+# lynx-grpc Production Readiness
 
-本文档描述 gRPC 插件在生产环境中的可选配置、推荐实践与已知限制。
+This document describes optional configuration, recommended practices, and known limitations of the gRPC plugin in production.
 
-## 服务端可选配置（lynx.grpc.service）
+## Server Optional Configuration (lynx.grpc.service)
 
-除 proto 定义的 `network`、`addr`、`timeout`、`tls_enable`、`tls_auth_type`、`max_concurrent_streams`、`max_recv_msg_size`、`max_send_msg_size` 外，可通过同一配置前缀以 YAML/JSON 扩展以下选项：
+In addition to proto-defined options (`network`, `addr`, `timeout`, `tls_enable`, `tls_auth_type`, `max_concurrent_streams`, `max_recv_msg_size`, `max_send_msg_size`), the following options can be extended under the same config prefix via YAML/JSON:
 
-### 优雅关闭
+### Graceful Shutdown
 
-- **graceful_shutdown_timeout** (duration)：停止 gRPC 服务时等待请求排空的最长时间，默认 `30s`。
+- **graceful_shutdown_timeout** (duration): Maximum time to wait for in-flight requests to drain when stopping the gRPC server. Default: `30s`.
 
-### 中间件开关
+### Middleware Toggles
 
-- **enable_tracing** (bool)：是否启用 Kratos 链路追踪中间件，默认 `true`。
-- **enable_request_logging** (bool)：是否启用请求日志拦截器，默认 `true`。
-- **enable_metrics** (bool)：是否启用 Prometheus 指标拦截器，默认 `true`。
+- **enable_tracing** (bool): Whether to enable Kratos tracing middleware. Default: `true`.
+- **enable_request_logging** (bool): Whether to enable request logging interceptor. Default: `true`.
+- **enable_metrics** (bool): Whether to enable Prometheus metrics interceptor. Default: `true`.
 
-### 限流（进程内）
+### Rate Limiting (In-Process)
 
-- **rate_limit** (object)：
-  - **enabled** (bool)：是否启用限流。
-  - **rate_per_second** (float)：每秒允许的请求数。
-  - **burst** (int)：突发容量，建议 ≥ rate_per_second + 1。
+- **rate_limit** (object):
+  - **enabled** (bool): Whether rate limiting is enabled.
+  - **rate_per_second** (float): Allowed requests per second.
+  - **burst** (int): Burst capacity; recommended ≥ rate_per_second + 1.
 
-### 并发控制
+### Concurrency Control
 
-- **max_inflight_unary** (int32)：同时进行的 Unary RPC 上限，0 表示不限制，默认 `0`。可用于防止单机过载。
+- **max_inflight_unary** (int32): Maximum concurrent Unary RPCs; `0` means unlimited. Default: `0`. Use to avoid single-node overload.
 
-### 服务端熔断
+### Server-Side Circuit Breaker
 
-- **circuit_breaker** (object)：
-  - **enabled** (bool)：是否启用服务端熔断。
-  - **failure_threshold** (int)：失败次数达到该值后熔断打开，默认 `5`。
-  - **recovery_timeout** (duration)：熔断打开后多久进入半开，默认 `30s`。
-  - **success_threshold** (int)：半开状态下连续成功次数达到该值后关闭熔断，默认 `3`。
-  - **timeout** (duration)：单次请求超时，默认 `10s`。
-  - **max_concurrent_requests** (int)：半开状态允许的最大并发请求数，默认 `10`。
+- **circuit_breaker** (object):
+  - **enabled** (bool): Whether server-side circuit breaker is enabled.
+  - **failure_threshold** (int): Number of failures before opening the circuit. Default: `5`.
+  - **recovery_timeout** (duration): Time after opening before entering half-open. Default: `30s`.
+  - **success_threshold** (int): Consecutive successes in half-open required to close the circuit. Default: `3`.
+  - **timeout** (duration): Per-request timeout. Default: `10s`.
+  - **max_concurrent_requests** (int): Max concurrent requests allowed in half-open. Default: `10`.
 
-### 配置示例
+### Configuration Example
 
 ```yaml
 lynx:
@@ -51,7 +51,7 @@ lynx:
       max_concurrent_streams: 1000
       max_recv_msg_size: 10485760
       max_send_msg_size: 10485760
-      # 扩展选项
+      # Extended options
       graceful_shutdown_timeout: "30s"
       enable_tracing: true
       enable_request_logging: true
@@ -70,58 +70,60 @@ lynx:
         max_concurrent_requests: 10
 ```
 
-## 客户端使用说明
+## Client Usage
 
-- **服务发现**：若使用 Polaris 等注册中心，需在应用侧调用 `grpc.SetDiscovery(discovery)` 注入，否则仅能使用静态 `endpoint` 或 `subscribe_services` 中的静态端点。
-- **连接获取**：应通过已注册的 gRPC 客户端插件实例获取连接（例如通过 Lynx 的 PluginManager 获取 `grpc.client` 插件后再调用 `GetConnection(serviceName)`），避免使用会创建新插件实例的便捷函数导致拿到未初始化的配置与连接池。
+- **Service discovery**: When using a registry such as Polaris, the application must call `grpc.SetDiscovery(discovery)` to inject it; otherwise only static `endpoint` or static endpoints in `subscribe_services` can be used.
+- **Obtaining connections**: Obtain connections via the registered gRPC client plugin instance (e.g., get the `grpc.client` plugin from Lynx’s PluginManager, then call `GetConnection(serviceName)`). Avoid using convenience functions that create new plugin instances, which can return uninitialized config and connection pools.
+- **Load balancer**: When `load_balancer` is configured for a service in `subscribe_services` (e.g. `round_robin`, `random`, `p2c`, `consistent_hash`), new connections use the LoadBalancer: each time a new connection is created from the pool, `SelectNode` is called to pick an instance and connect directly (connection-level load balancing). Without `load_balancer`, `discovery:///service_name` is used and gRPC handles resolution and default policy.
+- **NodeFilter**: Node filtering via `ClientConfig.NodeFilter` is applied in `LoadBalancer.SelectNode` (filter instances, then apply policy). It only takes effect when using the LoadBalancer.
 
-## 生产上线检查清单
+## Production Readiness Checklist
 
-上线前请逐项确认，避免因漏配导致生产故障。
+Confirm each item before going live to avoid production issues from missing configuration.
 
-### 必须项
+### Required
 
-- [ ] **连接必须通过 PluginManager 获取**  
-  业务代码中获取 gRPC 连接时，使用 `grpc.GetGrpcClientConnection(serviceName, application.GetPluginManager())` 或先 `GetGrpcClientPlugin(pluginManager)` 再 `GetConnection(serviceName)`。  
-  **不要**在业务中直接使用 `GetOrCreateGrpcClientPlugin()` 作为主路径，否则可能拿到未初始化的插件实例（空配置、未启动连接池），连接行为不可预期。
+- [ ] **Connections must be obtained via PluginManager**  
+  When obtaining gRPC connections in application code, use `grpc.GetGrpcClientConnection(serviceName, application.GetPluginManager())` or first `GetGrpcClientPlugin(pluginManager)` then `GetConnection(serviceName)`.  
+  **Do not** use `GetOrCreateGrpcClientPlugin()` as the primary path in application code; it may return an uninitialized plugin (empty config, connection pool not started) and connection behavior will be undefined.
 
-- [ ] **使用服务发现时必须注入 Discovery**  
-  若使用 Polaris 等注册中心，应用在启动阶段（在首次调用 gRPC 客户端前）必须调用 `grpc.SetDiscovery(discovery)` 注入。  
-  否则 `discovery` 为 nil，只能使用静态 `endpoint`；若配置中仅写了服务名、未写 endpoint，会报错或无法建连。  
-  建议在部署/启动脚本或初始化代码中显式调用，并在上线检查表中勾选确认。
+- [ ] **Inject Discovery when using service discovery**  
+  When using a registry such as Polaris, the application must call `grpc.SetDiscovery(discovery)` during startup (before the first gRPC client call).  
+  Otherwise `discovery` is nil and only static `endpoint` can be used; if the config only specifies a service name and no endpoint, you will get errors or failed connections.  
+  Call it explicitly in deployment/startup scripts or init code, and confirm in your go-live checklist.
 
-- [ ] **TLS 证书由 Lynx 提供**  
-  客户端 TLS 通过 `lynx.Lynx().Certificate()` 获取证书。生产环境若启用 TLS，须保证 Lynx 已正确初始化并配置好证书；否则在需要 TLS 建连时会 panic。  
-  确认应用启动顺序中 Lynx 与证书加载先于 gRPC 客户端插件的首次使用。
+- [ ] **TLS certificates provided by Lynx**  
+  Client TLS uses certificates from `lynx.Lynx().Certificate()`. In production with TLS enabled, ensure Lynx is initialized and certificates are configured; otherwise TLS connection setup may panic.  
+  Confirm that Lynx and certificate loading run before the first use of the gRPC client plugin.
 
-### 推荐项
+### Recommended
 
-- [ ] **客户端配置严格校验（可选）**  
-  对关键服务可在启动或配置热更前调用 `ConfigValidator.ValidateClientConfig(config)` 做一次严格校验，及早发现配置错误。
+- [ ] **Strict client config validation (optional)**  
+  For critical services, call `ConfigValidator.ValidateClientConfig(config)` at startup or before config hot-reload to catch configuration errors early.
 
-- [ ] **监控与告警**  
-  使用插件暴露的 Prometheus 指标（请求量、时延、熔断状态、连接数等）配置监控大盘与告警；对「required 服务不可用」「连接失败率突增」等设置告警规则。
+- [ ] **Monitoring and alerting**  
+  Use Prometheus metrics exposed by the plugin (request volume, latency, circuit breaker state, connection count, etc.) for dashboards and alerts; set rules for “required service unavailable”, “connection failure rate spike”, and similar.
 
-- [ ] **灰度与回滚**  
-  首次上线或大版本升级时建议先小流量/单实例灰度，观察错误率、延迟、连接数；保留快速回滚方案（配置或版本回滚）。
+- [ ] **Canary and rollback**  
+  For first rollout or major upgrades, use small traffic or single-instance canary and watch error rate, latency, and connection count; keep a fast rollback path (config or version rollback).
 
-### 检查表示例
+### Checklist Example
 
-| 检查项                         | 确认 |
-|--------------------------------|------|
-| 连接获取使用 PluginManager 传入 | ☐    |
-| 使用注册中心时已调用 SetDiscovery | ☐    |
-| TLS 场景下 Lynx 与证书已正确初始化 | ☐    |
-| 监控与告警已配置                 | ☐    |
-| 灰度/回滚方案已就绪              | ☐    |
+| Check item | Done |
+|------------|------|
+| Connections obtained via PluginManager | ☐ |
+| SetDiscovery called when using registry | ☐ |
+| Lynx and certificates correctly initialized for TLS | ☐ |
+| Monitoring and alerting configured | ☐ |
+| Canary/rollback plan ready | ☐ |
 
-## 已知限制与注意事项
+## Known Limitations and Notes
 
-1. **服务端限流来源**：当前服务端从 control plane 获取的“外部限流”未接入，仅配置中的 `rate_limit` 生效。
-2. **健康检查端口**：服务端健康检查在“端口尚未监听”（如启动阶段）时对端口不可达仅打警告、不判失败，以避免误判；若长期端口不可达，需依赖监控与告警。
-3. **配置校验**：客户端除内置 `validateConfiguration()` 外，还提供 `ConfigValidator.ValidateClientConfig()`，可用于启动前或配置热更前的严格校验；按需集成。
+1. **Server rate limit source**: External rate limits from the control plane are not wired in; only the configured `rate_limit` is effective.
+2. **Health check port**: When the server port is not yet listening (e.g. during startup), health checks only log a warning for unreachable port and do not fail, to avoid false negatives; rely on monitoring and alerting if the port stays unreachable.
+3. **Config validation**: Besides the built-in `validateConfiguration()`, the client provides `ConfigValidator.ValidateClientConfig()` for strict validation before startup or config hot-reload; integrate as needed.
 
-## 版本与兼容
+## Version and Compatibility
 
-- 插件版本：v2.0.0
-- 依赖 Lynx 框架与 Kratos 的版本见 `go.mod`；生产部署前请确认与当前 Lynx 主版本兼容。
+- Plugin version: v1.5.5 (aligned with grpc.service / grpc.client code).
+- Lynx framework and Kratos versions are in `go.mod`; confirm compatibility with the current Lynx main version before production deployment.

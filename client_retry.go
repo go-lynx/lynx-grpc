@@ -1,3 +1,5 @@
+// RetryHandler provides optional programmatic retry (e.g. for tests or custom flows).
+// The default gRPC client retry is implemented in retryUnaryClientInterceptor (client_interceptors.go).
 package grpc
 
 import (

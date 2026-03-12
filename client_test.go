@@ -16,7 +16,7 @@ func TestNewGrpcClientPlugin(t *testing.T) {
 	plugin := NewGrpcClientPlugin()
 	assert.NotNil(t, plugin)
 	assert.Equal(t, "grpc.client", plugin.Name())
-	assert.Equal(t, "v2.0.0", plugin.Version())
+	assert.Equal(t, "v1.5.5", plugin.Version())
 	assert.Equal(t, "gRPC client plugin for Lynx framework", plugin.Description())
 	assert.Equal(t, 20, plugin.Weight())
 }

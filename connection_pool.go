@@ -405,8 +405,8 @@ func (p *ConnectionPool) GetServiceStatus() map[string]string {
 			states[s]++
 		}
 		var parts []string
-		for s, c := range states {
-			parts = append(parts, fmt.Sprintf("%s(%d)", s, c))
+		for state, count := range states {
+			parts = append(parts, fmt.Sprintf("%s(%d)", state, count))
 		}
 		if len(parts) == 0 {
 			out[name] = "0 connections"
