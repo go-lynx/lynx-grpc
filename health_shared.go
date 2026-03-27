@@ -5,3 +5,5 @@ package grpc
 // gRPC client plugin after its required-check passes, and can be updated later
 // if a background monitor is introduced.
 const requiredReadinessResourceName = "lynx.grpc.required_upstreams_ready"
+const requiredReadinessStableResourceName = clientPluginName + ".required_upstreams_ready"
+const requiredReadinessPrivateResourceName = "required_upstreams_ready"

@@ -50,15 +50,18 @@ func (c *ClientPlugin) publishRequiredReadiness(ready bool) {
 	if c == nil || c.rt == nil {
 		return
 	}
-	// RegisterSharedResource also overwrites existing entries safely in our runtime
-	if err := c.rt.RegisterSharedResource(requiredReadinessResourceName, ready); err != nil {
-		log.Warnf("Failed to publish required readiness state: %v", err)
-	} else {
-		if ready {
-			log.Infof("Published required upstream readiness: READY")
-		} else {
-			log.Warnf("Published required upstream readiness: NOT READY")
+	for _, resourceName := range []string{requiredReadinessResourceName, requiredReadinessStableResourceName} {
+		if err := c.rt.RegisterSharedResource(resourceName, ready); err != nil {
+			log.Warnf("Failed to publish required readiness state %s: %v", resourceName, err)
 		}
+	}
+	if err := c.rt.RegisterPrivateResource(requiredReadinessPrivateResourceName, ready); err != nil {
+		log.Warnf("Failed to publish private required readiness state: %v", err)
+	}
+	if ready {
+		log.Infof("Published required upstream readiness: READY")
+	} else {
+		log.Warnf("Published required upstream readiness: NOT READY")
 	}
 }
 

@@ -592,7 +592,7 @@ func (g *Service) updateHealthServingStatus() {
 
 	status := grpc_health_v1.HealthCheckResponse_SERVING
 	if g.rt != nil {
-		val, err := g.rt.GetSharedResource(requiredReadinessResourceName)
+		val, err := g.getRequiredReadinessState()
 		if err != nil {
 			// Resource not found or error accessing it - log only once to avoid spam
 			// This is normal when gRPC client plugin is not used or no required upstreams are configured
@@ -637,6 +637,21 @@ func (g *Service) updateHealthServingStatus() {
 
 	// Set the serving status
 	g.healthServer.SetServingStatus("", status)
+}
+
+func (g *Service) getRequiredReadinessState() (any, error) {
+	if g == nil || g.rt == nil {
+		return nil, fmt.Errorf("runtime is nil")
+	}
+	var lastErr error
+	for _, resourceName := range []string{requiredReadinessStableResourceName, requiredReadinessResourceName} {
+		val, err := g.rt.GetSharedResource(resourceName)
+		if err == nil {
+			return val, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
 }
 
 // validateTLSConfig validates TLS configuration
