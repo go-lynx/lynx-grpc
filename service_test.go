@@ -1,6 +1,7 @@
 package grpc
 
 import (
+	"context"
 	"net"
 	"testing"
 	"time"
@@ -22,6 +23,25 @@ func TestNewGrpcService(t *testing.T) {
 	assert.Equal(t, pluginDescription, plugin.Description())
 	// ConfigPrefix is not directly accessible, test through internal state
 	assert.Equal(t, 10, plugin.Weight())
+}
+
+func TestGrpcServiceProtocol(t *testing.T) {
+	plugin := NewGrpcService()
+	protocol := plugin.PluginProtocol()
+	assert.True(t, protocol.ManagedLifecycle)
+	assert.True(t, protocol.HealthAware)
+	assert.True(t, protocol.ContextLifecycle)
+	assert.True(t, protocol.ConfigValidation)
+}
+
+func TestGrpcServiceStartContextCanceled(t *testing.T) {
+	plugin := NewGrpcService()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := plugin.StartContext(ctx, plugin)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "context canceled")
 }
 
 func TestInitializeResources(t *testing.T) {

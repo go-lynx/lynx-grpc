@@ -72,10 +72,12 @@ lynx:
 
 ## Client Usage
 
-- **Service discovery**: When using a registry such as Polaris, the application must call `grpc.SetDiscovery(discovery)` to inject it; otherwise only static `endpoint` or static endpoints in `subscribe_services` can be used.
+- **Service discovery**: The gRPC client now first tries to resolve discovery from shared runtime resources such as `polaris.control.plane.service_discovery` and `nacos.control.plane.service_discovery`, then falls back to the default Lynx app's `GetServiceDiscovery()`. `grpc.SetDiscovery(discovery)` is still available as an explicit override when needed.
 - **Obtaining connections**: Obtain connections via the registered gRPC client plugin instance (e.g., get the `grpc.client` plugin from Lynx’s PluginManager, then call `GetConnection(serviceName)`). Avoid using convenience functions that create new plugin instances, which can return uninitialized config and connection pools.
 - **Load balancer**: When `load_balancer` is configured for a service in `subscribe_services` (e.g. `round_robin`, `random`, `p2c`, `consistent_hash`), new connections use the LoadBalancer: each time a new connection is created from the pool, `SelectNode` is called to pick an instance and connect directly (connection-level load balancing). Without `load_balancer`, `discovery:///service_name` is used and gRPC handles resolution and default policy.
 - **NodeFilter**: Node filtering via `ClientConfig.NodeFilter` is applied in `LoadBalancer.SelectNode` (filter instances, then apply policy). It only takes effect when using the LoadBalancer.
+- **Lifecycle**: `grpc.client` and `grpc.service` both declare context-aware lifecycle now. Startup and shutdown can be driven by Lynx lifecycle contexts, and required-upstream checks honor cancellation.
+- **Configuration updates**: Validation is supported in-process, but connection/server-affecting changes still apply on the next managed restart rather than live mutation of existing transports.
 
 ## Production Readiness Checklist
 
@@ -87,10 +89,9 @@ Confirm each item before going live to avoid production issues from missing conf
   When obtaining gRPC connections in application code, use `grpc.GetGrpcClientConnection(serviceName, application.GetPluginManager())` or first `GetGrpcClientPlugin(pluginManager)` then `GetConnection(serviceName)`.  
   **Do not** use `GetOrCreateGrpcClientPlugin()` as the primary path in application code; it may return an uninitialized plugin (empty config, connection pool not started) and connection behavior will be undefined.
 
-- [ ] **Inject Discovery when using service discovery**  
-  When using a registry such as Polaris, the application must call `grpc.SetDiscovery(discovery)` during startup (before the first gRPC client call).  
-  Otherwise `discovery` is nil and only static `endpoint` can be used; if the config only specifies a service name and no endpoint, you will get errors or failed connections.  
-  Call it explicitly in deployment/startup scripts or init code, and confirm in your go-live checklist.
+- [ ] **Confirm Discovery source when using service discovery**  
+  Prefer publishing service discovery through the control plane plugin (`polaris` / `nacos`) or the default Lynx app so `grpc.client` can resolve it automatically.  
+  If your deployment does not expose discovery that way, call `grpc.SetDiscovery(discovery)` explicitly during startup before the first gRPC client call.
 
 - [ ] **TLS certificates provided by Lynx**  
   Client TLS uses certificates from `lynx.Lynx().Certificate()`. In production with TLS enabled, ensure Lynx is initialized and certificates are configured; otherwise TLS connection setup may panic.  
@@ -112,7 +113,7 @@ Confirm each item before going live to avoid production issues from missing conf
 | Check item | Done |
 |------------|------|
 | Connections obtained via PluginManager | ☐ |
-| SetDiscovery called when using registry | ☐ |
+| Discovery source verified (auto or explicit SetDiscovery) | ☐ |
 | Lynx and certificates correctly initialized for TLS | ☐ |
 | Monitoring and alerting configured | ☐ |
 | Canary/rollback plan ready | ☐ |
