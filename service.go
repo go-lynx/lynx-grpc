@@ -164,6 +164,9 @@ func (g *Service) SetDependencies(
 // It loads and validates the gRPC server configuration from the runtime environment.
 // If no configuration is provided, it sets up default values for the server.
 func (g *Service) InitializeResources(rt plugins.Runtime) error {
+	if err := g.BasePlugin.InitializeResources(rt); err != nil {
+		return err
+	}
 	// store runtime for later use (e.g., readiness resource lookups)
 	g.rt = rt
 	// Initialize an empty configuration structure
@@ -253,12 +256,26 @@ func (g *Service) InitializeResources(rt plugins.Runtime) error {
 	return nil
 }
 
+func (g *Service) InitializeContext(ctx context.Context, plugin plugins.Plugin, rt plugins.Runtime) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("context canceled before gRPC service initialize: %w", err)
+	}
+	return g.BasePlugin.Initialize(plugin, rt)
+}
+
 // StartupTasks implements the plugin startup interface.
 // It configures and starts the gRPC server with all necessary middleware and options,
 // including tracing, logging, rate limiting, validation, and recovery handlers.
 func (g *Service) StartupTasks() error {
+	return g.startupWithContext(context.Background())
+}
+
+func (g *Service) startupWithContext(ctx context.Context) error {
 	// Log gRPC service startup
 	log.Info("starting grpc service")
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("context canceled before gRPC service startup: %w", err)
+	}
 
 	var middlewares []middleware.Middleware
 
@@ -314,6 +331,9 @@ func (g *Service) StartupTasks() error {
 		opts = append(opts, grpc.Timeout(g.conf.Timeout.AsDuration()))
 	}
 	if g.conf.GetTlsEnable() {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("gRPC service startup canceled before TLS initialization: %w", err)
+		}
 		// If TLS is enabled, add TLS configuration options
 		tlsOption, err := g.tlsLoad()
 		if err != nil {
@@ -360,6 +380,9 @@ func (g *Service) StartupTasks() error {
 	}
 
 	// Create gRPC server instance
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("gRPC service startup canceled before server creation: %w", err)
+	}
 	g.server = grpc.NewServer(opts...)
 
 	// Register custom health server and set initial serving status from required readiness
@@ -379,6 +402,9 @@ func (g *Service) StartupTasks() error {
 	}()
 
 	// Start background poller to keep serving status in sync with required upstream readiness
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("gRPC service startup canceled before health poller startup: %w", err)
+	}
 	pollCtx, cancel := context.WithCancel(context.Background())
 	g.healthPollCancel = cancel
 	go g.healthStatusPoller(pollCtx)
@@ -387,12 +413,37 @@ func (g *Service) StartupTasks() error {
 	// Record server start time for metrics
 	g.recordServerStartTime()
 
+	if g.rt != nil {
+		if err := g.rt.RegisterSharedResource(pluginName, g); err != nil {
+			return fmt.Errorf("failed to register gRPC service shared resource: %w", err)
+		}
+		if g.server != nil {
+			if err := g.rt.RegisterPrivateResource("server", g.server); err != nil {
+				log.Warnf("failed to register gRPC service private server resource: %v", err)
+			}
+		}
+		if g.healthServer != nil {
+			if err := g.rt.RegisterPrivateResource("health_server", g.healthServer); err != nil {
+				log.Warnf("failed to register gRPC service private health server resource: %v", err)
+			}
+		}
+		if g.serverOpts != nil {
+			if err := g.rt.RegisterPrivateResource("server_options", g.serverOpts); err != nil {
+				log.Warnf("failed to register gRPC service private server options resource: %v", err)
+			}
+		}
+	}
+
 	// Success - clear cleanup function
 	cleanup = nil
 
 	// Log successful gRPC service startup
 	log.Info("grpc service successfully started")
 	return nil
+}
+
+func (g *Service) StartContext(ctx context.Context, _ plugins.Plugin) error {
+	return g.startupWithContext(ctx)
 }
 
 // CleanupTasks implements the plugin cleanup interface.
@@ -448,6 +499,10 @@ func (g *Service) CleanupTasksContext(parentCtx context.Context) error {
 	return nil
 }
 
+func (g *Service) StopContext(ctx context.Context, _ plugins.Plugin) error {
+	return g.CleanupTasksContext(ctx)
+}
+
 // Configure allows runtime configuration updates for the gRPC server.
 // It accepts an interface{} parameter that should contain the new configuration
 // and updates the server settings accordingly.
@@ -477,7 +532,21 @@ func (g *Service) Configure(c any) error {
 	}
 
 	log.Infof("gRPC configuration updated successfully")
+	if g.server != nil {
+		log.Infof("gRPC service configuration changes will apply on next managed restart")
+	}
 	return nil
+}
+
+func (g *Service) PluginProtocol() plugins.PluginProtocol {
+	protocol := g.BasePlugin.PluginProtocol()
+	protocol.ContextLifecycle = true
+	protocol.ConfigValidation = true
+	return protocol
+}
+
+func (g *Service) IsContextAware() bool {
+	return true
 }
 
 // CheckHealth implements the health check interface for the gRPC server.

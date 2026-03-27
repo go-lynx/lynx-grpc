@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/go-lynx/lynx-grpc/conf"
+	"github.com/go-lynx/lynx/plugins"
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -19,6 +20,43 @@ func TestNewGrpcClientPlugin(t *testing.T) {
 	assert.Equal(t, "v1.5.5", plugin.Version())
 	assert.Equal(t, "gRPC client plugin for Lynx framework", plugin.Description())
 	assert.Equal(t, 20, plugin.Weight())
+}
+
+func TestClientPluginProtocol(t *testing.T) {
+	plugin := &ClientPlugin{BasePlugin: plugins.NewBasePlugin("grpc.client", "grpc.client", "gRPC client plugin for Lynx framework", "v1.5.5", "lynx.grpc.client", 20)}
+	protocol := plugin.PluginProtocol()
+	assert.True(t, protocol.ManagedLifecycle)
+	assert.True(t, protocol.HealthAware)
+	assert.True(t, protocol.ContextLifecycle)
+	assert.True(t, protocol.ConfigValidation)
+}
+
+func TestClientPluginStartContextCanceled(t *testing.T) {
+	plugin := &ClientPlugin{BasePlugin: plugins.NewBasePlugin("grpc.client", "grpc.client", "gRPC client plugin for Lynx framework", "v1.5.5", "lynx.grpc.client", 20)}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := plugin.StartContext(ctx, plugin)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "context canceled")
+}
+
+func TestCheckRequiredServicesContextCanceled(t *testing.T) {
+	plugin := &ClientPlugin{
+		BasePlugin: plugins.NewBasePlugin("grpc.client", "grpc.client", "gRPC client plugin for Lynx framework", "v1.5.5", "lynx.grpc.client", 20),
+	}
+	plugin.conf = &conf.GrpcClient{
+		SubscribeServices: []*conf.SubscribeService{
+			{Name: "required-service", Required: true},
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := plugin.CheckRequiredServicesContext(ctx)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "context canceled")
 }
 
 func TestClientPlugin_CleanupTasks(t *testing.T) {

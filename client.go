@@ -45,6 +45,11 @@ type ClientPlugin struct {
 	rt              plugins.Runtime
 }
 
+var serviceDiscoverySharedResourceNames = []string{
+	"polaris.control.plane.service_discovery",
+	"nacos.control.plane.service_discovery",
+}
+
 // publishRequiredReadiness publishes the required-upstreams readiness state to the shared runtime resource.
 func (c *ClientPlugin) publishRequiredReadiness(ready bool) {
 	if c == nil || c.rt == nil {
@@ -114,6 +119,9 @@ func NewGrpcClientPlugin() *ClientPlugin {
 
 // InitializeResources initializes the gRPC client plugin
 func (c *ClientPlugin) InitializeResources(rt plugins.Runtime) error {
+	if err := c.BasePlugin.InitializeResources(rt); err != nil {
+		return err
+	}
 	// Store runtime for publishing readiness state
 	c.rt = rt
 	// Load configuration
@@ -159,10 +167,7 @@ func (c *ClientPlugin) InitializeResources(rt plugins.Runtime) error {
 		c.connectionPool = NewConnectionPool(maxServices, maxConnsPerService, idleTimeout, poolEnabled, c.metrics)
 	}
 
-	// Get discovery from control plane
-	// Note: This needs to be injected via dependency injection
-	// For now, we'll set it to nil and handle it later
-	c.discovery = nil
+	c.discovery = c.resolveServiceDiscovery()
 
 	// Validate configuration
 	if err := c.validateConfiguration(); err != nil {
@@ -175,9 +180,52 @@ func (c *ClientPlugin) InitializeResources(rt plugins.Runtime) error {
 	return nil
 }
 
+func (c *ClientPlugin) resolveServiceDiscovery() registry.Discovery {
+	if c == nil {
+		return nil
+	}
+	if c.discovery != nil {
+		return c.discovery
+	}
+	if c.rt != nil {
+		for _, resourceName := range serviceDiscoverySharedResourceNames {
+			resource, err := c.rt.GetSharedResource(resourceName)
+			if err != nil || resource == nil {
+				continue
+			}
+			discovery, ok := resource.(registry.Discovery)
+			if ok {
+				log.Infof("Resolved gRPC client service discovery from shared resource %s", resourceName)
+				return discovery
+			}
+			log.Warnf("Shared resource %s does not implement registry.Discovery: %T", resourceName, resource)
+		}
+	}
+	discovery, err := lynx.GetServiceDiscovery()
+	if err == nil && discovery != nil {
+		log.Infof("Resolved gRPC client service discovery from default Lynx app")
+		return discovery
+	}
+	return nil
+}
+
+func (c *ClientPlugin) InitializeContext(ctx context.Context, plugin plugins.Plugin, rt plugins.Runtime) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("context canceled before gRPC client initialize: %w", err)
+	}
+	return c.BasePlugin.Initialize(plugin, rt)
+}
+
 // StartupTasks starts the gRPC client plugin
 func (c *ClientPlugin) StartupTasks() error {
+	return c.startupWithContext(context.Background())
+}
+
+func (c *ClientPlugin) startupWithContext(ctx context.Context) error {
 	log.Infof("Starting gRPC client plugin")
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("context canceled before gRPC client startup: %w", err)
+	}
 
 	// Initialize metrics
 	c.metrics.Initialize()
@@ -189,7 +237,7 @@ func (c *ClientPlugin) StartupTasks() error {
 	c.publishRequiredReadiness(false)
 
 	// Gate startup on required upstream readiness
-	if err := c.CheckRequiredServices(); err != nil {
+	if err := c.CheckRequiredServicesContext(ctx); err != nil {
 		log.Errorf("Required upstream services check failed: %v", err)
 		return err
 	}
@@ -197,12 +245,64 @@ func (c *ClientPlugin) StartupTasks() error {
 	// Mark readiness true after required-check passes
 	c.publishRequiredReadiness(true)
 
+	if c.rt != nil {
+		if err := c.rt.RegisterSharedResource(clientPluginName, c); err != nil {
+			return fmt.Errorf("failed to register gRPC client shared resource: %w", err)
+		}
+		if c.connectionPool != nil {
+			if err := c.rt.RegisterPrivateResource("connection_pool", c.connectionPool); err != nil {
+				log.Warnf("failed to register gRPC client private connection pool: %v", err)
+			}
+		}
+		if c.loadBalancer != nil {
+			if err := c.rt.RegisterPrivateResource("load_balancer", c.loadBalancer); err != nil {
+				log.Warnf("failed to register gRPC client private load balancer: %v", err)
+			}
+		}
+		if c.circuitBreakers != nil {
+			if err := c.rt.RegisterPrivateResource("circuit_breakers", c.circuitBreakers); err != nil {
+				log.Warnf("failed to register gRPC client private circuit breakers: %v", err)
+			}
+		}
+		if c.discovery != nil {
+			if err := c.rt.RegisterPrivateResource("discovery", c.discovery); err != nil {
+				log.Warnf("failed to register gRPC client private discovery: %v", err)
+			}
+		}
+		if c.metrics != nil {
+			if err := c.rt.RegisterPrivateResource("metrics", c.metrics); err != nil {
+				log.Warnf("failed to register gRPC client private metrics: %v", err)
+			}
+		}
+		if len(c.connections) > 0 {
+			if err := c.rt.RegisterPrivateResource("connections", c.connections); err != nil {
+				log.Warnf("failed to register gRPC client private connections: %v", err)
+			}
+		}
+		if c.tlsManager != nil {
+			if err := c.rt.RegisterPrivateResource("tls_manager", c.tlsManager); err != nil {
+				log.Warnf("failed to register gRPC client private TLS manager: %v", err)
+			}
+		}
+	}
+
 	log.Infof("gRPC client plugin started successfully")
 	return nil
 }
 
+func (c *ClientPlugin) StartContext(ctx context.Context, _ plugins.Plugin) error {
+	return c.startupWithContext(ctx)
+}
+
 // CleanupTasks is called by the framework during plugin Stop to release all resources.
 func (c *ClientPlugin) CleanupTasks() error {
+	return c.Close()
+}
+
+func (c *ClientPlugin) StopContext(ctx context.Context, _ plugins.Plugin) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("context canceled before gRPC client stop: %w", err)
+	}
 	return c.Close()
 }
 
@@ -258,6 +358,31 @@ func (c *ClientPlugin) Close() error {
 	}
 
 	return lastErr
+}
+
+func (c *ClientPlugin) Configure(cfg any) error {
+	if cfg == nil {
+		return nil
+	}
+	grpcConf, ok := cfg.(*conf.GrpcClient)
+	if !ok {
+		return fmt.Errorf("invalid configuration type: expected *conf.GrpcClient, got %T", cfg)
+	}
+
+	oldConf := c.conf
+	c.conf = grpcConf
+	if err := c.validateConfiguration(); err != nil {
+		c.conf = oldConf
+		return fmt.Errorf("gRPC client configuration validation failed: %w", err)
+	}
+	if c.connectionPool != nil || len(c.connections) > 0 {
+		log.Infof("gRPC client configuration updated in memory; connection changes apply on next restart or reconnect")
+	}
+	return nil
+}
+
+func (c *ClientPlugin) IsContextAware() bool {
+	return true
 }
 
 // GetConnection returns a gRPC client connection for the specified service.
@@ -386,6 +511,10 @@ func normalizeGrpcTarget(addr string) string {
 
 // buildConnection builds a gRPC client connection with the given configuration
 func (c *ClientPlugin) buildConnection(config ClientConfig) (*grpc.ClientConn, error) {
+	return c.buildConnectionWithContext(context.Background(), config)
+}
+
+func (c *ClientPlugin) buildConnectionWithContext(ctx context.Context, config ClientConfig) (*grpc.ClientConn, error) {
 	// Build client options
 	var opts []grpc.DialOption
 
@@ -393,7 +522,7 @@ func (c *ClientPlugin) buildConnection(config ClientConfig) (*grpc.ClientConn, e
 	var target string
 	if config.Discovery != nil && config.LoadBalancer != "" {
 		// Use LoadBalancer to select one node and dial it (connection-level load balancing)
-		lbCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		lbCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 		node, _, err := c.loadBalancer.SelectNode(lbCtx, config.ServiceName)
 		if err != nil {
@@ -462,7 +591,7 @@ func (c *ClientPlugin) buildConnection(config ClientConfig) (*grpc.ClientConn, e
 		if waitTimeout <= 0 {
 			waitTimeout = 10 * time.Second
 		}
-		waitCtx, cancel := context.WithTimeout(context.Background(), waitTimeout)
+		waitCtx, cancel := context.WithTimeout(ctx, waitTimeout)
 		defer cancel()
 		// Start connecting and wait for Ready
 		conn.Connect()
@@ -719,7 +848,19 @@ func (c *ClientPlugin) validateConfiguration() error {
 // SetDiscovery sets the service discovery instance
 func (c *ClientPlugin) SetDiscovery(discovery registry.Discovery) {
 	c.discovery = discovery
+	if c.rt != nil && discovery != nil {
+		if err := c.rt.RegisterPrivateResource("discovery", discovery); err != nil {
+			log.Warnf("failed to update gRPC client private discovery resource: %v", err)
+		}
+	}
 	log.Infof("Service discovery set for gRPC client plugin")
+}
+
+func (c *ClientPlugin) PluginProtocol() plugins.PluginProtocol {
+	protocol := c.BasePlugin.PluginProtocol()
+	protocol.ContextLifecycle = true
+	protocol.ConfigValidation = true
+	return protocol
 }
 
 // buildSubscribeServiceConfig builds ClientConfig for a subscribe service by name (for use by GetSubscribeServiceConnection and CheckRequiredServices).
@@ -794,9 +935,16 @@ func (c *ClientPlugin) GetSubscribeServiceConnection(serviceName string) (*grpc.
 // CheckRequiredServices checks if all required services are available at startup.
 // Uses a temporary connection (buildConnection only, not pooled) so that closing it does not corrupt the connection pool.
 func (c *ClientPlugin) CheckRequiredServices() error {
+	return c.CheckRequiredServicesContext(context.Background())
+}
+
+func (c *ClientPlugin) CheckRequiredServicesContext(ctx context.Context) error {
 	for _, svc := range c.conf.SubscribeServices {
 		if !svc.Required {
 			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("gRPC client startup canceled while checking required services: %w", err)
 		}
 
 		log.Infof("Checking required service: %s", svc.Name)
@@ -807,7 +955,7 @@ func (c *ClientPlugin) CheckRequiredServices() error {
 		}
 
 		// Use buildConnection only (no pool) so closing does not leave a closed conn in the pool
-		conn, err := c.buildConnection(config)
+		conn, err := c.buildConnectionWithContext(ctx, config)
 		if err != nil {
 			return fmt.Errorf("required service %s is not available: %w", svc.Name, err)
 		}
