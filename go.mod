@@ -4,6 +4,8 @@ go 1.25
 
 toolchain go1.25.3
 
+replace github.com/go-lynx/lynx => ../lynx
+
 require (
 	github.com/go-kratos/kratos/contrib/middleware/validate/v2 v2.0.0-20250527152916-d6f5f00cf562
 	github.com/go-kratos/kratos/v2 v2.9.1
