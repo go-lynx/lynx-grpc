@@ -369,14 +369,27 @@ func (c *ClientPlugin) Configure(cfg any) error {
 		return fmt.Errorf("invalid configuration type: expected *conf.GrpcClient, got %T", cfg)
 	}
 
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	oldConf := c.conf
 	c.conf = grpcConf
+	c.discovery = c.resolveServiceDiscoveryLocked()
 	if err := c.validateConfiguration(); err != nil {
 		c.conf = oldConf
 		return fmt.Errorf("gRPC client configuration validation failed: %w", err)
 	}
+	for serviceName, conn := range c.connections {
+		if conn != nil {
+			if err := conn.Close(); err != nil {
+				log.Warnf("failed to close stale gRPC client connection for %s during reconfigure: %v", serviceName, err)
+			}
+		}
+	}
+	c.rebuildConnectionPoolLocked()
+	c.connections = make(map[string]*grpc.ClientConn)
 	if c.connectionPool != nil || len(c.connections) > 0 {
-		log.Infof("gRPC client configuration updated in memory; connection changes apply on next restart or reconnect")
+		log.Infof("gRPC client configuration updated; pooled connections were reset and new settings will apply on reconnect")
 	}
 	return nil
 }
@@ -601,6 +614,7 @@ func (c *ClientPlugin) buildConnectionWithContext(ctx context.Context, config Cl
 				break
 			}
 			if !conn.WaitForStateChange(waitCtx, state) {
+				_ = conn.Close()
 				return nil, fmt.Errorf("connection to %s not ready within %v (last_state=%s)", target, waitTimeout, state.String())
 			}
 		}

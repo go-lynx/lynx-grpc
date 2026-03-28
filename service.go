@@ -21,7 +21,6 @@ import (
 	"github.com/go-lynx/lynx"
 	"github.com/go-lynx/lynx-grpc/conf"
 	"github.com/go-lynx/lynx/plugins"
-	"golang.org/x/time/rate"
 	grpcgo "google.golang.org/grpc"
 	"google.golang.org/grpc/health"
 	"google.golang.org/grpc/health/grpc_health_v1"
@@ -213,45 +212,7 @@ func (g *Service) InitializeResources(rt plugins.Runtime) error {
 	// Load optional server options from the same config prefix (graceful_shutdown_timeout, enable_*, rate_limit, max_inflight_unary).
 	opts := defaultServerOptions()
 	_ = rt.GetConfig().Value(confPrefix).Scan(&opts)
-	sol := &serverOptsWithLimiter{opts: opts}
-	if opts.RateLimit.Enabled && opts.RateLimit.RatePerSecond > 0 {
-		rps := rate.Limit(opts.RateLimit.RatePerSecond)
-		burst := opts.RateLimit.Burst
-		if burst <= 0 {
-			burst = int(opts.RateLimit.RatePerSecond) + 1
-		}
-		sol.limiter = rate.NewLimiter(rps, burst)
-	}
-	if opts.MaxInflightUnary > 0 {
-		sol.inflightSem = make(chan struct{}, opts.MaxInflightUnary)
-	}
-	if opts.CircuitBreaker.Enabled {
-		cbCfg := &CircuitBreakerConfig{
-			Enabled:               true,
-			FailureThreshold:      opts.CircuitBreaker.FailureThreshold,
-			RecoveryTimeout:       opts.CircuitBreaker.RecoveryTimeout,
-			SuccessThreshold:      opts.CircuitBreaker.SuccessThreshold,
-			Timeout:               opts.CircuitBreaker.Timeout,
-			MaxConcurrentRequests: opts.CircuitBreaker.MaxConcurrentRequests,
-		}
-		if cbCfg.FailureThreshold <= 0 {
-			cbCfg.FailureThreshold = 5
-		}
-		if cbCfg.RecoveryTimeout <= 0 {
-			cbCfg.RecoveryTimeout = 30 * time.Second
-		}
-		if cbCfg.SuccessThreshold <= 0 {
-			cbCfg.SuccessThreshold = 3
-		}
-		if cbCfg.Timeout <= 0 {
-			cbCfg.Timeout = 10 * time.Second
-		}
-		if cbCfg.MaxConcurrentRequests <= 0 {
-			cbCfg.MaxConcurrentRequests = 10
-		}
-		sol.serverCircuitBreaker = NewCircuitBreaker("grpc.server", cbCfg, nil)
-	}
-	g.serverOpts = sol
+	g.serverOpts = buildServerOptionsFromConfig(g.conf, opts)
 
 	return nil
 }
@@ -531,9 +492,11 @@ func (g *Service) Configure(c any) error {
 		return fmt.Errorf("gRPC configuration validation failed: %w", err)
 	}
 
+	g.rebuildServerOptions()
+
 	log.Infof("gRPC configuration updated successfully")
 	if g.server != nil {
-		log.Infof("gRPC service configuration changes will apply on next managed restart")
+		log.Infof("gRPC service dynamic options were refreshed; listener and interceptor chain changes still require managed restart")
 	}
 	return nil
 }
@@ -562,15 +525,10 @@ func (g *Service) CheckHealth() error {
 		return fmt.Errorf("gRPC server address not configured")
 	}
 
-	// Check port availability
-	// Note: During startup, the server may not be listening yet (listening starts when Kratos app runs),
-	// so we skip port check if it fails and only log a warning instead of failing the health check.
+	// Runtime health checks should fail when the listening port is unavailable.
 	if err := g.checkPortAvailability(); err != nil {
-		// During startup phase, port may not be available yet, so we only log a warning
-		// instead of failing the health check. This allows the plugin to start successfully
-		// and the actual listening will happen when Kratos app starts.
-		log.Warnf("gRPC server port not yet available (this is normal during startup): %v", err)
-		// Don't return error during startup - the server will start listening when Kratos app runs
+		g.recordHealthCheckMetricsInternal(false)
+		return fmt.Errorf("gRPC server is not listening on %s: %w", g.conf.Addr, err)
 	}
 
 	// Check TLS configuration if enabled

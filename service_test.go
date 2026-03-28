@@ -12,6 +12,7 @@ import (
 	"github.com/go-lynx/lynx-grpc/conf"
 	"github.com/go-lynx/lynx/plugins"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/durationpb"
 )
 
@@ -72,11 +73,11 @@ func TestCheckHealth(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "gRPC server is not initialized")
 
-	// Test with mock server running
+	// Test with mock server running but port unavailable
 	plugin.server = grpc.NewServer()
 	err = plugin.CheckHealth()
-	assert.NoError(t, err)
-	assert.NotNil(t, plugin)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not listening")
 }
 
 func TestValidateConfig(t *testing.T) {
@@ -166,6 +167,35 @@ func TestConfigure(t *testing.T) {
 	err = plugin.Configure(config)
 	assert.NoError(t, err)
 	assert.Equal(t, config, plugin.conf)
+}
+
+func TestConfigureRebuildsServerOptions(t *testing.T) {
+	plugin := NewGrpcService()
+	plugin.conf = &conf.Service{
+		Network: "tcp",
+		Addr:    ":9090",
+		Timeout: durationpb.New(5 * time.Second),
+	}
+	plugin.serverOpts = buildServerOptionsFromConfig(plugin.conf, ServerOptions{
+		EnableTracing: false,
+		EnableMetrics: false,
+		RateLimit: RateLimitConfig{
+			Enabled:       true,
+			RatePerSecond: 10,
+			Burst:         20,
+		},
+	})
+
+	err := plugin.Configure(&conf.Service{
+		Network: "tcp",
+		Addr:    ":9091",
+		Timeout: durationpb.New(6 * time.Second),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, plugin.serverOpts)
+	assert.True(t, plugin.serverOpts.opts.EnableTracing)
+	assert.True(t, plugin.serverOpts.opts.EnableMetrics)
+	assert.Nil(t, plugin.serverOpts.limiter)
 }
 
 // Mock type definitions

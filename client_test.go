@@ -8,6 +8,7 @@ import (
 	"github.com/go-lynx/lynx-grpc/conf"
 	"github.com/go-lynx/lynx/plugins"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/durationpb"
@@ -265,6 +266,32 @@ func TestClientPluginConfiguration(t *testing.T) {
 	err = plugin.Configure("invalid")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid configuration type")
+}
+
+func TestClientConfigureRebuildsPool(t *testing.T) {
+	plugin := &ClientPlugin{
+		BasePlugin:      plugins.NewBasePlugin("grpc.client", "grpc.client", "gRPC client plugin for Lynx framework", "v1.5.5", "lynx.grpc.client", 20),
+		conf:            &conf.GrpcClient{},
+		connections:     make(map[string]*grpc.ClientConn),
+		connectionPool:  NewConnectionPool(10, 5, 5*time.Minute, false, nil),
+		loadBalancer:    NewLoadBalancer(nil, nil),
+		circuitBreakers: NewCircuitBreakerManager(nil),
+	}
+
+	oldPool := plugin.connectionPool
+	err := plugin.Configure(&conf.GrpcClient{
+		ConnectionPooling: true,
+		PoolSize:          3,
+		MaxConnections:    2,
+		IdleTimeout:       durationpb.New(time.Minute),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, plugin.connectionPool)
+	assert.NotSame(t, oldPool, plugin.connectionPool)
+	assert.True(t, plugin.connectionPool.enabled)
+	assert.Equal(t, 3, plugin.connectionPool.maxServices)
+	assert.Equal(t, 2, plugin.connectionPool.maxConnsPerService)
+	assert.Empty(t, plugin.connections)
 }
 
 func TestClientPluginConnectionManagement(t *testing.T) {
