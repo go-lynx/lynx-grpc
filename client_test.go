@@ -29,7 +29,6 @@ func TestClientPluginProtocol(t *testing.T) {
 	assert.True(t, protocol.ManagedLifecycle)
 	assert.True(t, protocol.HealthAware)
 	assert.True(t, protocol.ContextLifecycle)
-	assert.True(t, protocol.ConfigValidation)
 }
 
 func TestClientPluginStartContextCanceled(t *testing.T) {

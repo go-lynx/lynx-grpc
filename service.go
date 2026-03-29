@@ -504,7 +504,6 @@ func (g *Service) Configure(c any) error {
 func (g *Service) PluginProtocol() plugins.PluginProtocol {
 	protocol := g.BasePlugin.PluginProtocol()
 	protocol.ContextLifecycle = true
-	protocol.ConfigValidation = true
 	return protocol
 }
 
