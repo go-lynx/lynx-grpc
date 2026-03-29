@@ -873,7 +873,6 @@ func (c *ClientPlugin) SetDiscovery(discovery registry.Discovery) {
 func (c *ClientPlugin) PluginProtocol() plugins.PluginProtocol {
 	protocol := c.BasePlugin.PluginProtocol()
 	protocol.ContextLifecycle = true
-	protocol.ConfigValidation = true
 	return protocol
 }
 
