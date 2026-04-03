@@ -2,6 +2,14 @@
 
 This plugin provides both gRPC service (server) and client functionality for the Lynx framework, offering features such as TLS support, middleware integration, and configuration management.
 
+## Version & Migration Notes
+
+- Module path: `github.com/go-lynx/lynx-grpc`
+- Runtime plugin names: `grpc.service` and `grpc.client`
+- Local release audit note: the current [`go.mod`](./go.mod) still requires `github.com/go-lynx/lynx v1.6.0-beta`; this README documents the landed helper/config API, not a repository-wide stable dependency sweep.
+- `GetGrpcServer(pluginManager)` and `GetGrpcClientConnection(serviceName, pluginManager)` now prefer an explicit `lynx.PluginManager`. Passing `nil` only works after the default Lynx app has already been initialized.
+- Client-side legacy static `services` config remains supported for compatibility, but `subscribe_services` is the preferred configuration and the one new deployments should use.
+
 ## Features
 
 ### gRPC Service (Server)
@@ -35,12 +43,81 @@ This plugin provides both gRPC service (server) and client functionality for the
 ## Installation
 
 ```bash
-go get github.com/go-lynx/plugin-grpc/v2
+go get github.com/go-lynx/lynx-grpc
 ```
 
 ## Configuration
 
-The plugin can be configured through the Lynx configuration system with separate configurations for service and client:
+### Configuration Fields Reference
+
+The gRPC plugin configuration is delivered through protobuf with separate configurations for service (server) and client.
+
+#### gRPC Service Configuration (`lynx.grpc.service`)
+
+See `conf/service.proto` for field definitions:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `network` | `string` | `"tcp"` | Network type (e.g., `"tcp"`, `"unix"`) |
+| `addr` | `string` | `":9090"` | Server listen address (e.g., `":9090"`, `"localhost:9090"`) |
+| `tls_enable` | `bool` | `false` | Enable TLS/gRPCS encryption |
+| `tls_auth_type` | `int32` | `0` | TLS client auth type (0–4, see below) |
+| `timeout` | `Duration` | not set | Maximum duration for handling a single gRPC request |
+| `max_concurrent_streams` | `uint32` | `0` (unlimited) | Max concurrent streams per HTTP/2 connection. Recommended: 100–500 (small), 500–2000 (medium), 2000–10000 (large) |
+| `max_recv_msg_size` | `uint32` | `0` (~4 MB gRPC default) | Maximum inbound message size in bytes |
+| `max_send_msg_size` | `uint32` | `0` (~4 MB gRPC default) | Maximum outbound message size in bytes |
+
+**TLS Authentication Types:**
+- `0`: No client authentication
+- `1`: Request client certificate, but not mandatory
+- `2`: Require client certificate
+- `3`: Verify client certificate
+- `4`: Require and verify client certificate
+
+#### gRPC Client Configuration (`lynx.grpc.client`)
+
+See `conf/client.proto` for field definitions:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `default_timeout` | `Duration` | `10s` | Default timeout for all outbound gRPC calls |
+| `default_keep_alive` | `Duration` | `30s` | Keep-alive ping interval for idle connections |
+| `max_retries` | `int32` | `3` | Maximum retries for failed requests |
+| `retry_backoff` | `Duration` | `1s` | Backoff duration between retries |
+| `max_connections` | `int32` | `10` | Maximum connections per target service |
+| `tls_enable` | `bool` | `false` | Enable TLS for all client connections |
+| `tls_auth_type` | `int32` | `0` | TLS client auth type (0–4) |
+| `connection_pooling` | `bool` | `false` | Enable connection pooling |
+| `pool_size` | `int32` | `5` | Connections in the pool per service |
+| `idle_timeout` | `Duration` | not set | Idle connection eviction timeout |
+| `health_check_enabled` | `bool` | `false` | Enable gRPC health check protocol per connection |
+| `health_check_interval` | `Duration` | `30s` | How often to probe connection health |
+| `metrics_enabled` | `bool` | `false` | Enable per-method Prometheus metrics on the client |
+| `tracing_enabled` | `bool` | `false` | Inject trace context into outgoing metadata (requires lynx-tracer) |
+| `logging_enabled` | `bool` | `false` | Log method, target, duration, and trace ID per call |
+| `max_message_size` | `int32` | `0` (4 MB gRPC default) | Max inbound/outbound message size in bytes |
+| `compression_enabled` | `bool` | `false` | Enable message compression |
+| `compression_type` | `string` | `"gzip"` | Compression algorithm: `gzip`, `deflate` |
+| `subscribe_services` | `repeated subscribe_service` | `[]` | Service discovery subscriptions (preferred) |
+| `services` _(deprecated)_ | `repeated static_service` | `[]` | Legacy static service list; use `subscribe_services` |
+
+#### Subscribe Service Configuration (`subscribe_services[*]`)
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `name` | `string` | — (required) | Service name for discovery and `GetConnection(name)` |
+| `endpoint` | `string` | `""` | Static endpoint override (skips discovery when set) |
+| `timeout` | `Duration` | inherits global | Per-service timeout override |
+| `tls_enable` | `bool` | inherits global | Enable TLS for this service |
+| `tls_auth_type` | `int32` | inherits global | TLS auth type for this service |
+| `max_retries` | `int32` | inherits global | Per-service retry limit |
+| `required` | `bool` | `false` | Fail startup if this service is unreachable |
+| `metadata` | `map<string,string>` | `{}` | Arbitrary key-value metadata sent with requests |
+| `load_balancer` | `string` | `"round_robin"` | LB strategy: `round_robin`, `random`, `weighted_round_robin` |
+| `circuit_breaker_enabled` | `bool` | `false` | Enable circuit breaker for this service |
+| `circuit_breaker_threshold` | `int32` | `5` | Failure count that trips the circuit breaker |
+
+### Basic Configuration Example
 
 ```yaml
 lynx:
@@ -49,21 +126,58 @@ lynx:
     service:
       network: "tcp"
       addr: ":9090"
-      timeout: 10
+      timeout: { seconds: 10 }
       tls_enable: true
       tls_auth_type: 4  # Mutual TLS authentication
-    
+      max_concurrent_streams: 1000
+
     # gRPC Client Configuration (Client-side)
     client:
-      default_timeout: "10s"
-      default_keep_alive: "30s"
+      default_timeout: { seconds: 10 }
+      default_keep_alive: { seconds: 30 }
       max_retries: 3
-      retry_backoff: "1s"
+      retry_backoff: { seconds: 1 }
       max_connections: 10
       tls_enable: true
       tls_auth_type: 4
       connection_pooling: true
       pool_size: 5
+      tracing_enabled: true
+      logging_enabled: true
+```
+
+For discovery-first deployments, prefer `subscribe_services` over the deprecated static `services` list:
+
+```yaml
+lynx:
+  grpc:
+    client:
+      default_timeout: { seconds: 10 }
+      default_keep_alive: { seconds: 30 }
+      max_retries: 3
+      retry_backoff: { seconds: 1 }
+      max_connections: 10
+      tls_enable: true
+      tls_auth_type: 4
+      connection_pooling: true
+      pool_size: 5
+      health_check_enabled: true
+      health_check_interval: { seconds: 30 }
+      metrics_enabled: true
+      tracing_enabled: true
+      logging_enabled: true
+      subscribe_services:
+        - name: "user-service"
+          required: true
+          timeout: { seconds: 2 }
+          metadata:
+            tenant: "default"
+          load_balancer: "round_robin"
+          circuit_breaker_enabled: true
+          circuit_breaker_threshold: 5
+        - name: "order-service"
+          endpoint: "127.0.0.1:9001"
+          tls_enable: false
 ```
 
 ### Configuration Options
@@ -102,8 +216,15 @@ lynx:
 - `tls_auth_type`: TLS authentication type (0-4)
 - `connection_pooling`: Enable connection pooling
 - `pool_size`: Connection pool size
+- `health_check_enabled`: Enable periodic health probing for pooled connections
+- `health_check_interval`: Interval between health probes
+- `metrics_enabled`: Enable client-side Prometheus metrics
 - `tracing_enabled`: Enable trace context injection into gRPC metadata (recommended when using lynx-tracer)
 - `logging_enabled`: Enable request/response logging on the client
+- `max_message_size`: Max inbound/outbound message size in bytes
+- `compression_enabled`: Enable gzip/deflate compression
+- `compression_type`: Compression algorithm used when compression is enabled
+- `subscribe_services`: Preferred discovery/static-override list used by `GetConnection(serviceName)`
 - `services`: Service-specific configurations (deprecated; use `subscribe_services`)
 
 ## Usage
@@ -114,19 +235,15 @@ lynx:
 package main
 
 import (
-    "github.com/go-lynx/lynx/app"
-    "github.com/go-lynx/plugin-grpc/v2"
+    lynxapp "github.com/go-lynx/lynx"
+    lynxgrpc "github.com/go-lynx/lynx-grpc"
     pb "your/protobuf/package"
 )
 
 func main() {
-    // Initialize your Lynx application
-    application := app.NewApplication()
-    
-    // The gRPC plugin will be automatically registered and initialized
-    
-    // Get the gRPC server instance
-    server, err := grpc.GetGrpcServer()
+    // After the default Lynx application has been initialized, pass its plugin manager
+    // explicitly. A nil pluginManager fallback only works after lynxapp.Lynx() is ready.
+    server, err := lynxgrpc.GetGrpcServer(lynxapp.Lynx().GetPluginManager())
     if err != nil {
         log.Fatalf("Failed to get gRPC server: %v", err)
     }
@@ -134,10 +251,7 @@ func main() {
     // Register your gRPC service
     pb.RegisterYourServiceServer(server, &YourServiceImpl{})
     
-    // Start the application
-    if err := application.Run(); err != nil {
-        panic(err)
-    }
+    // Start the application via your normal boot path
 }
 ```
 
@@ -163,17 +277,13 @@ package main
 
 import (
     "context"
-    "github.com/go-lynx/lynx/app"
-    "github.com/go-lynx/plugin-grpc/v2"
+    lynxapp "github.com/go-lynx/lynx"
+    lynxgrpc "github.com/go-lynx/lynx-grpc"
     "google.golang.org/grpc"
 )
 
 func main() {
-    // Initialize your application
-    application := app.NewApplication()
-    
-    // Get the gRPC server
-    server, err := grpc.GetGrpcServer()
+    server, err := lynxgrpc.GetGrpcServer(lynxapp.Lynx().GetPluginManager())
     if err != nil {
         log.Fatalf("Failed to get gRPC server: %v", err)
     }
@@ -181,16 +291,40 @@ func main() {
     // Add your custom middleware
     server.Use(YourCustomMiddleware())
     
-    // Start the application
-    if err := application.Run(); err != nil {
-        panic(err)
-    }
+    // Continue starting the application through your normal Lynx boot path.
 }
 
 func YourCustomMiddleware() grpc.UnaryServerInterceptor {
-    return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+    return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
         // Your middleware logic here
         return handler(ctx, req)
+    }
+}
+```
+
+### Client Helper Usage
+
+```go
+package main
+
+import (
+    "context"
+
+    lynxapp "github.com/go-lynx/lynx"
+    lynxgrpc "github.com/go-lynx/lynx-grpc"
+    pb "your/protobuf/package"
+)
+
+func main() {
+    conn, err := lynxgrpc.GetGrpcClientConnection("user-service", lynxapp.Lynx().GetPluginManager())
+    if err != nil {
+        log.Fatalf("Failed to get gRPC client connection: %v", err)
+    }
+
+    client := pb.NewUserServiceClient(conn)
+    _, err = client.GetUser(context.Background(), &pb.GetUserRequest{UserId: "123"})
+    if err != nil {
+        log.Printf("request failed: %v", err)
     }
 }
 ```
