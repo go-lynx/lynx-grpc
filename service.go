@@ -54,6 +54,8 @@ type Service struct {
 	healthServer *health.Server
 	// cancel function for background health status poller
 	healthPollCancel context.CancelFunc
+	// wait for the health poller goroutine to exit before returning from cleanup
+	healthPollWG sync.WaitGroup
 	// gRPC service configuration information
 	conf *conf.Service
 	// runtime handle to query shared resources (e.g., required readiness)
@@ -366,10 +368,17 @@ func (g *Service) startupWithContext(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("gRPC service startup canceled before health poller startup: %w", err)
 	}
-	pollCtx, cancel := context.WithCancel(context.Background())
+	pollCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	g.healthPollCancel = cancel
-	go g.healthStatusPoller(pollCtx)
-	cleanup = cancel // Set cleanup function to cancel poller on failure
+	g.healthPollWG.Add(1)
+	go func() {
+		defer g.healthPollWG.Done()
+		g.healthStatusPoller(pollCtx)
+	}()
+	cleanup = func() {
+		cancel()
+		g.healthPollWG.Wait()
+	}
 
 	// Record server start time for metrics
 	g.recordServerStartTime()
@@ -446,8 +455,8 @@ func (g *Service) CleanupTasksContext(parentCtx context.Context) error {
 	defer cancel()
 
 	// Stop background poller and shutdown health server
-	if g.healthPollCancel != nil {
-		g.healthPollCancel()
+	if err := g.stopHealthPoller(ctx); err != nil {
+		return plugins.NewPluginError(g.ID(), "Stop", "Failed to stop gRPC health poller", err)
 	}
 	if g.healthServer != nil {
 		g.healthServer.Shutdown()
@@ -462,6 +471,27 @@ func (g *Service) CleanupTasksContext(parentCtx context.Context) error {
 
 func (g *Service) StopContext(ctx context.Context, _ plugins.Plugin) error {
 	return g.CleanupTasksContext(ctx)
+}
+
+func (g *Service) stopHealthPoller(ctx context.Context) error {
+	if g.healthPollCancel == nil {
+		return nil
+	}
+
+	g.healthPollCancel()
+	done := make(chan struct{})
+	go func() {
+		g.healthPollWG.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		g.healthPollCancel = nil
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // Configure allows runtime configuration updates for the gRPC server.

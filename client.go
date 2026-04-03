@@ -296,14 +296,14 @@ func (c *ClientPlugin) StartContext(ctx context.Context, _ plugins.Plugin) error
 
 // CleanupTasks is called by the framework during plugin Stop to release all resources.
 func (c *ClientPlugin) CleanupTasks() error {
-	return c.Close()
+	return c.CloseContext(context.Background())
 }
 
 func (c *ClientPlugin) StopContext(ctx context.Context, _ plugins.Plugin) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("context canceled before gRPC client stop: %w", err)
 	}
-	return c.Close()
+	return c.CloseContext(ctx)
 }
 
 // CloseServiceConnection closes connections for the given service (pool and legacy map).
@@ -320,6 +320,15 @@ func (c *ClientPlugin) CloseServiceConnection(serviceName string) error {
 
 // Close closes all connections and cleans up resources
 func (c *ClientPlugin) Close() error {
+	return c.CloseContext(context.Background())
+}
+
+// CloseContext closes all connections and cleans up resources while honoring a caller-provided stop budget.
+func (c *ClientPlugin) CloseContext(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("context canceled before gRPC client close: %w", err)
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 

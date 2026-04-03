@@ -47,6 +47,7 @@ type ConnectionPool struct {
 	cleanupTicker   *time.Ticker
 	stopCleanup     chan struct{}
 	stopCleanupOnce sync.Once // Ensure stopCleanup is only closed once
+	cleanupWG       sync.WaitGroup
 }
 
 // serviceConnectionPool manages multiple connections for a single service
@@ -90,6 +91,7 @@ func NewConnectionPoolWithStrategy(maxServices int, maxConnsPerService int, idle
 	if enabled && idleTimeout > 0 {
 		// Start cleanup routine for idle connections
 		pool.cleanupTicker = time.NewTicker(idleTimeout / 2)
+		pool.cleanupWG.Add(1)
 		go pool.cleanupRoutine()
 	}
 
@@ -332,16 +334,16 @@ func (p *ConnectionPool) CloseConnection(serviceName string) error {
 
 // CloseAll closes all connections in the pool
 func (p *ConnectionPool) CloseAll() error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	// Stop cleanup routine (only once)
 	if p.cleanupTicker != nil {
 		p.cleanupTicker.Stop()
 	}
 	p.stopCleanupOnce.Do(func() {
 		close(p.stopCleanup)
 	})
+	p.cleanupWG.Wait()
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
 
 	// Collect all service names before deletion for metrics recording
 	serviceNames := make([]string, 0, len(p.services))
@@ -505,6 +507,7 @@ func (p *ConnectionPool) getLRUServiceNameLocked() string {
 
 // cleanupRoutine periodically removes idle connections
 func (p *ConnectionPool) cleanupRoutine() {
+	defer p.cleanupWG.Done()
 	for {
 		select {
 		case <-p.cleanupTicker.C:
