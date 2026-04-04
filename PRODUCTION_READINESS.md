@@ -121,7 +121,7 @@ Confirm each item before going live to avoid production issues from missing conf
 ## Known Limitations and Notes
 
 1. **Server rate limit source**: External rate limits from the control plane are not wired in; only the configured `rate_limit` is effective.
-2. **Health check port**: When the server port is not yet listening (e.g. during startup), health checks only log a warning for unreachable port and do not fail, to avoid false negatives; rely on monitoring and alerting if the port stays unreachable.
+2. **Health check port**: Runtime `CheckHealth()` treats an unreachable listening port as a hard failure and returns an error immediately. During rollout, wire alerts to this failure instead of assuming the plugin will only warn.
 3. **Config validation**: Besides the built-in `validateConfiguration()`, the client provides `ConfigValidator.ValidateClientConfig()` for strict validation before startup or config hot-reload; integrate as needed.
 
 ## Version and Compatibility

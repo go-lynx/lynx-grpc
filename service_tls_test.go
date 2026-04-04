@@ -24,17 +24,9 @@ type mockCertProvider struct {
 	rootCA      []byte
 }
 
-func (m *mockCertProvider) GetCertificate() ([]byte, error) {
-	return m.certificate, nil
-}
-
-func (m *mockCertProvider) GetPrivateKey() ([]byte, error) {
-	return m.privateKey, nil
-}
-
-func (m *mockCertProvider) GetRootCA() ([]byte, error) {
-	return m.rootCA, nil
-}
+func (m *mockCertProvider) GetCertificate() []byte       { return m.certificate }
+func (m *mockCertProvider) GetPrivateKey() []byte        { return m.privateKey }
+func (m *mockCertProvider) GetRootCACertificate() []byte { return m.rootCA }
 
 // generateTestCertificates creates test certificates for testing
 func generateTestCertificates() ([]byte, []byte, error) {
@@ -82,14 +74,12 @@ func generateTestCertificates() ([]byte, []byte, error) {
 }
 
 func TestTlsLoad(t *testing.T) {
-	// Skip this test due to complex TLS configuration issues
-	t.Skip("Skipping TLS test due to configuration complexity")
-
 	plugin := NewGrpcService()
 
 	// Test with nil certificate provider
 	plugin.conf = &conf.Service{
-		TlsEnable: true,
+		TlsEnable:   true,
+		TlsAuthType: 4,
 	}
 
 	// Test with nil certificate provider (default behavior)

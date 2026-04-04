@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
 	dto "github.com/prometheus/client_model/go"
 )
 
@@ -50,119 +49,219 @@ type ClientMetrics struct {
 // NewClientMetrics creates a new ClientMetrics instance
 func NewClientMetrics() *ClientMetrics {
 	return &ClientMetrics{
-		connectionsTotal: promauto.NewGauge(prometheus.GaugeOpts{
+		connectionsTotal: registerOrReuseGauge(prometheus.GaugeOpts{
 			Namespace: "lynx",
 			Subsystem: "grpc_client",
 			Name:      "connections_total",
 			Help:      "Total number of gRPC client connections",
 		}),
-		connectionsActive: promauto.NewGauge(prometheus.GaugeOpts{
+		connectionsActive: registerOrReuseGauge(prometheus.GaugeOpts{
 			Namespace: "lynx",
 			Subsystem: "grpc_client",
 			Name:      "connections_active",
 			Help:      "Number of active gRPC client connections",
 		}),
-		connectionsCreated: promauto.NewCounter(prometheus.CounterOpts{
+		connectionsCreated: registerOrReuseCounter(prometheus.CounterOpts{
 			Namespace: "lynx",
 			Subsystem: "grpc_client",
 			Name:      "connections_created_total",
 			Help:      "Total number of gRPC client connections created",
 		}),
-		connectionsClosed: promauto.NewCounter(prometheus.CounterOpts{
+		connectionsClosed: registerOrReuseCounter(prometheus.CounterOpts{
 			Namespace: "lynx",
 			Subsystem: "grpc_client",
 			Name:      "connections_closed_total",
 			Help:      "Total number of gRPC client connections closed",
 		}),
-		connectionsFailed: promauto.NewCounter(prometheus.CounterOpts{
+		connectionsFailed: registerOrReuseCounter(prometheus.CounterOpts{
 			Namespace: "lynx",
 			Subsystem: "grpc_client",
 			Name:      "connections_failed_total",
 			Help:      "Total number of failed gRPC client connection attempts",
 		}),
-		requestsTotal: promauto.NewCounterVec(prometheus.CounterOpts{
+		requestsTotal: registerOrReuseCounterVec(prometheus.CounterOpts{
 			Namespace: "lynx",
 			Subsystem: "grpc_client",
 			Name:      "requests_total",
 			Help:      "Total number of gRPC client requests",
 		}, []string{"service", "method", "status"}),
-		requestDuration: promauto.NewHistogramVec(prometheus.HistogramOpts{
+		requestDuration: registerOrReuseHistogramVec(prometheus.HistogramOpts{
 			Namespace: "lynx",
 			Subsystem: "grpc_client",
 			Name:      "request_duration_seconds",
 			Help:      "Duration of gRPC client requests",
 			Buckets:   prometheus.DefBuckets,
 		}, []string{"service", "method"}),
-		requestErrors: promauto.NewCounterVec(prometheus.CounterOpts{
+		requestErrors: registerOrReuseCounterVec(prometheus.CounterOpts{
 			Namespace: "lynx",
 			Subsystem: "grpc_client",
 			Name:      "request_errors_total",
 			Help:      "Total number of gRPC client request errors",
 		}, []string{"service", "method", "error_type"}),
-		retriesTotal: promauto.NewCounterVec(prometheus.CounterOpts{
+		retriesTotal: registerOrReuseCounterVec(prometheus.CounterOpts{
 			Namespace: "lynx",
 			Subsystem: "grpc_client",
 			Name:      "retries_total",
 			Help:      "Total number of gRPC client retries",
 		}, []string{"service", "method"}),
-		retryDuration: promauto.NewHistogramVec(prometheus.HistogramOpts{
+		retryDuration: registerOrReuseHistogramVec(prometheus.HistogramOpts{
 			Namespace: "lynx",
 			Subsystem: "grpc_client",
 			Name:      "retry_duration_seconds",
 			Help:      "Duration of gRPC client retries",
 			Buckets:   prometheus.DefBuckets,
 		}, []string{"service", "method"}),
-		healthChecksTotal: promauto.NewCounterVec(prometheus.CounterOpts{
+		healthChecksTotal: registerOrReuseCounterVec(prometheus.CounterOpts{
 			Namespace: "lynx",
 			Subsystem: "grpc_client",
 			Name:      "health_checks_total",
 			Help:      "Total number of gRPC client health checks",
 		}, []string{"service", "status"}),
-		healthCheckDuration: promauto.NewHistogramVec(prometheus.HistogramOpts{
+		healthCheckDuration: registerOrReuseHistogramVec(prometheus.HistogramOpts{
 			Namespace: "lynx",
 			Subsystem: "grpc_client",
 			Name:      "health_check_duration_seconds",
 			Help:      "Duration of gRPC client health checks",
 			Buckets:   prometheus.DefBuckets,
 		}, []string{"service"}),
-		poolSize: promauto.NewGaugeVec(prometheus.GaugeOpts{
+		poolSize: registerOrReuseGaugeVec(prometheus.GaugeOpts{
 			Namespace: "lynx",
 			Subsystem: "grpc_client",
 			Name:      "pool_size",
 			Help:      "Size of gRPC client connection pool",
 		}, []string{"service"}),
-		poolActive: promauto.NewGaugeVec(prometheus.GaugeOpts{
+		poolActive: registerOrReuseGaugeVec(prometheus.GaugeOpts{
 			Namespace: "lynx",
 			Subsystem: "grpc_client",
 			Name:      "pool_active",
 			Help:      "Number of active connections in pool",
 		}, []string{"service"}),
-		poolIdle: promauto.NewGaugeVec(prometheus.GaugeOpts{
+		poolIdle: registerOrReuseGaugeVec(prometheus.GaugeOpts{
 			Namespace: "lynx",
 			Subsystem: "grpc_client",
 			Name:      "pool_idle",
 			Help:      "Number of idle connections in pool",
 		}, []string{"service"}),
-		messageSize: promauto.NewHistogramVec(prometheus.HistogramOpts{
+		messageSize: registerOrReuseHistogramVec(prometheus.HistogramOpts{
 			Namespace: "lynx",
 			Subsystem: "grpc_client",
 			Name:      "message_size_bytes",
 			Help:      "Size of gRPC client messages",
 			Buckets:   prometheus.ExponentialBuckets(1024, 2, 20), // 1KB to 1GB
 		}, []string{"service", "method", "direction"}),
-		circuitBreakerState: promauto.NewGaugeVec(prometheus.GaugeOpts{
+		circuitBreakerState: registerOrReuseGaugeVec(prometheus.GaugeOpts{
 			Namespace: "lynx",
 			Subsystem: "grpc_client",
 			Name:      "circuit_breaker_state",
 			Help:      "State of gRPC client circuit breaker (0=closed, 1=open, 2=half-open)",
 		}, []string{"service"}),
-		circuitBreakerTrips: promauto.NewCounterVec(prometheus.CounterOpts{
+		circuitBreakerTrips: registerOrReuseCounterVec(prometheus.CounterOpts{
 			Namespace: "lynx",
 			Subsystem: "grpc_client",
 			Name:      "circuit_breaker_trips_total",
 			Help:      "Total number of gRPC client circuit breaker trips",
 		}, []string{"service"}),
 	}
+}
+
+func registerOrReuseGauge(opts prometheus.GaugeOpts) prometheus.Gauge {
+	collector := prometheus.NewGauge(opts)
+	if err := prometheus.Register(collector); err != nil {
+		if existing, ok := unwrapRegisteredGauge(err); ok {
+			return existing
+		}
+		panic(err)
+	}
+	return collector
+}
+
+func registerOrReuseCounter(opts prometheus.CounterOpts) prometheus.Counter {
+	collector := prometheus.NewCounter(opts)
+	if err := prometheus.Register(collector); err != nil {
+		if existing, ok := unwrapRegisteredCounter(err); ok {
+			return existing
+		}
+		panic(err)
+	}
+	return collector
+}
+
+func registerOrReuseGaugeVec(opts prometheus.GaugeOpts, labels []string) *prometheus.GaugeVec {
+	collector := prometheus.NewGaugeVec(opts, labels)
+	if err := prometheus.Register(collector); err != nil {
+		if existing, ok := unwrapRegisteredGaugeVec(err); ok {
+			return existing
+		}
+		panic(err)
+	}
+	return collector
+}
+
+func registerOrReuseCounterVec(opts prometheus.CounterOpts, labels []string) *prometheus.CounterVec {
+	collector := prometheus.NewCounterVec(opts, labels)
+	if err := prometheus.Register(collector); err != nil {
+		if existing, ok := unwrapRegisteredCounterVec(err); ok {
+			return existing
+		}
+		panic(err)
+	}
+	return collector
+}
+
+func registerOrReuseHistogramVec(opts prometheus.HistogramOpts, labels []string) *prometheus.HistogramVec {
+	collector := prometheus.NewHistogramVec(opts, labels)
+	if err := prometheus.Register(collector); err != nil {
+		if existing, ok := unwrapRegisteredHistogramVec(err); ok {
+			return existing
+		}
+		panic(err)
+	}
+	return collector
+}
+
+func unwrapRegisteredGauge(err error) (prometheus.Gauge, bool) {
+	alreadyRegistered, ok := err.(prometheus.AlreadyRegisteredError)
+	if !ok {
+		return nil, false
+	}
+	collector, ok := alreadyRegistered.ExistingCollector.(prometheus.Gauge)
+	return collector, ok
+}
+
+func unwrapRegisteredCounter(err error) (prometheus.Counter, bool) {
+	alreadyRegistered, ok := err.(prometheus.AlreadyRegisteredError)
+	if !ok {
+		return nil, false
+	}
+	collector, ok := alreadyRegistered.ExistingCollector.(prometheus.Counter)
+	return collector, ok
+}
+
+func unwrapRegisteredGaugeVec(err error) (*prometheus.GaugeVec, bool) {
+	alreadyRegistered, ok := err.(prometheus.AlreadyRegisteredError)
+	if !ok {
+		return nil, false
+	}
+	collector, ok := alreadyRegistered.ExistingCollector.(*prometheus.GaugeVec)
+	return collector, ok
+}
+
+func unwrapRegisteredCounterVec(err error) (*prometheus.CounterVec, bool) {
+	alreadyRegistered, ok := err.(prometheus.AlreadyRegisteredError)
+	if !ok {
+		return nil, false
+	}
+	collector, ok := alreadyRegistered.ExistingCollector.(*prometheus.CounterVec)
+	return collector, ok
+}
+
+func unwrapRegisteredHistogramVec(err error) (*prometheus.HistogramVec, bool) {
+	alreadyRegistered, ok := err.(prometheus.AlreadyRegisteredError)
+	if !ok {
+		return nil, false
+	}
+	collector, ok := alreadyRegistered.ExistingCollector.(*prometheus.HistogramVec)
+	return collector, ok
 }
 
 // Initialize initializes the metrics
@@ -371,7 +470,7 @@ func (m *ClientMetrics) GetRequestCount() float64 {
 
 	var total float64
 	for _, mf := range metricFamilies {
-		if mf.GetName() == "grpc_client_requests_total" {
+		if mf.GetName() == "lynx_grpc_client_requests_total" {
 			for _, metric := range mf.GetMetric() {
 				total += metric.GetCounter().GetValue()
 			}
@@ -397,7 +496,7 @@ func (m *ClientMetrics) GetErrorCount() float64 {
 		metricFamilies, err := prometheus.DefaultGatherer.Gather()
 		if err == nil {
 			for _, mf := range metricFamilies {
-				if mf.GetName() == "grpc_client_request_errors_total" {
+				if mf.GetName() == "lynx_grpc_client_request_errors_total" {
 					for _, metric := range mf.GetMetric() {
 						if metric.GetCounter() != nil {
 							total += metric.GetCounter().GetValue()
