@@ -226,6 +226,7 @@ func (c *ClientPlugin) startupWithContext(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("context canceled before gRPC client startup: %w", err)
 	}
+	c.publishRuntimeContract(false, false)
 
 	// Initialize metrics
 	c.metrics.Initialize()
@@ -247,7 +248,12 @@ func (c *ClientPlugin) startupWithContext(ctx context.Context) error {
 
 	if c.rt != nil {
 		if err := c.rt.RegisterSharedResource(clientPluginName, c); err != nil {
+			c.publishRuntimeContract(false, false)
 			return fmt.Errorf("failed to register gRPC client shared resource: %w", err)
+		}
+		c.registerRuntimePluginAlias()
+		if err := c.rt.RegisterPrivateResource("config", c.conf); err != nil {
+			log.Warnf("failed to register gRPC client private config: %v", err)
 		}
 		if c.connectionPool != nil {
 			if err := c.rt.RegisterPrivateResource("connection_pool", c.connectionPool); err != nil {
@@ -285,6 +291,12 @@ func (c *ClientPlugin) startupWithContext(ctx context.Context) error {
 			}
 		}
 	}
+
+	if err := c.CheckHealth(); err != nil {
+		c.publishRuntimeContract(false, false)
+		return err
+	}
+	c.publishRuntimeContract(true, true)
 
 	log.Infof("gRPC client plugin started successfully")
 	return nil
@@ -328,6 +340,7 @@ func (c *ClientPlugin) CloseContext(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("context canceled before gRPC client close: %w", err)
 	}
+	c.publishRuntimeContract(false, false)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
