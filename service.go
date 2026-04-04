@@ -260,11 +260,9 @@ func (g *Service) startupWithContext(ctx context.Context) error {
 			}),
 		),
 	)
-	if rateLimit := g.getGRPCRateLimit(); rateLimit != nil {
-		if rl, ok := rateLimit.(middleware.Middleware); ok {
-			middlewares = append(middlewares, rl)
-			log.Info("Added rate limiting middleware")
-		}
+	if rl := g.getGRPCRateLimit(); rl != nil {
+		middlewares = append(middlewares, rl)
+		log.Info("Added control-plane gRPC rate limiting middleware")
 	}
 	gMiddlewares := grpc.Middleware(middlewares...)
 
@@ -346,6 +344,7 @@ func (g *Service) startupWithContext(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("gRPC service startup canceled before server creation: %w", err)
 	}
+	g.publishRuntimeContract(false, false)
 	g.server = grpc.NewServer(opts...)
 
 	// Register custom health server and set initial serving status from required readiness
@@ -385,7 +384,12 @@ func (g *Service) startupWithContext(ctx context.Context) error {
 
 	if g.rt != nil {
 		if err := g.rt.RegisterSharedResource(pluginName, g); err != nil {
+			g.publishRuntimeContract(false, false)
 			return fmt.Errorf("failed to register gRPC service shared resource: %w", err)
+		}
+		g.registerRuntimePluginAlias()
+		if err := g.rt.RegisterPrivateResource("config", g.conf); err != nil {
+			log.Warnf("failed to register gRPC service private config resource: %v", err)
 		}
 		if g.server != nil {
 			if err := g.rt.RegisterPrivateResource("server", g.server); err != nil {
@@ -406,6 +410,7 @@ func (g *Service) startupWithContext(ctx context.Context) error {
 
 	// Success - clear cleanup function
 	cleanup = nil
+	g.publishRuntimeContract(true, true)
 
 	// Log successful gRPC service startup
 	log.Info("grpc service successfully started")
@@ -437,6 +442,7 @@ func (g *Service) CleanupTasksContext(parentCtx context.Context) error {
 	if g.server == nil {
 		return nil
 	}
+	g.publishRuntimeContract(false, false)
 
 	var ctx context.Context
 	var cancel context.CancelFunc
@@ -867,18 +873,24 @@ func (g *Service) getCertProvider() interface{} {
 // getControlPlane returns the control plane using dependency injection
 func (g *Service) getControlPlane() interface{} {
 	if g.controlPlaneProvider != nil {
-		return g.controlPlaneProvider()
+		if cp := g.controlPlaneProvider(); cp != nil {
+			return cp
+		}
 	}
-	return nil // fallback
+	if app := lynx.Lynx(); app != nil {
+		return app.GetControlPlane()
+	}
+	return nil
 }
 
 // getGRPCRateLimit returns the gRPC rate limit middleware using dependency injection
-func (g *Service) getGRPCRateLimit() interface{} {
+func (g *Service) getGRPCRateLimit() middleware.Middleware {
 	controlPlane := g.getControlPlane()
 	if controlPlane == nil {
 		return nil
 	}
-	// Type assertion would be needed here in real implementation
-	// For now, return nil as fallback
+	if rl, ok := controlPlane.(lynx.RateLimiter); ok {
+		return rl.GRPCRateLimit()
+	}
 	return nil
 }
