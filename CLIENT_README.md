@@ -12,7 +12,7 @@ This plugin provides comprehensive gRPC client functionality for the Lynx framew
 - **Health Checking**: Built-in health check functionality
 - **Load Balancing**: Support for various load balancing strategies
 - **Unary interceptors**: Tracing (context propagation when `tracing_enabled` is true), per-method metrics, circuit breaker per RPC, and request logging with optional trace id
-- **Integration**: Seamless integration with `app/subscribe`
+- **Integration**: Optional integration points with `github.com/go-lynx/lynx/subscribe` (current helper loader is still under refactor)
 
 ## Installation
 
@@ -153,17 +153,17 @@ package main
 
 import (
     "context"
-    "github.com/go-lynx/lynx/app"
-    "github.com/go-lynx/lynx-grpc"
+    lynx "github.com/go-lynx/lynx"
+    lynxgrpc "github.com/go-lynx/lynx-grpc"
     pb "your/protobuf/package"
 )
 
 func main() {
-    // Initialize your Lynx application
-    application := app.NewApplication()
+    // Run this after your normal Lynx boot path has initialized the default app.
+    pm := lynx.Lynx().GetPluginManager()
     
-    // Get gRPC client connection (pass plugin manager to use the registered plugin instance)
-    conn, err := grpc.GetGrpcClientConnection("user-service", application.GetPluginManager())
+    // Get gRPC client connection from the registered plugin instance.
+    conn, err := lynxgrpc.GetGrpcClientConnection("user-service", pm)
     if err != nil {
         log.Fatalf("Failed to get gRPC connection: %v", err)
     }
@@ -181,11 +181,6 @@ func main() {
     }
     
     log.Infof("User: %+v", resp.User)
-    
-    // Start the application
-    if err := application.Run(); err != nil {
-        panic(err)
-    }
 }
 ```
 
@@ -198,19 +193,18 @@ import (
     "context"
     "time"
     
-    "github.com/go-lynx/lynx/app"
-    "github.com/go-lynx/lynx-grpc"
+    lynx "github.com/go-lynx/lynx"
+    lynxgrpc "github.com/go-lynx/lynx-grpc"
     pb "your/protobuf/package"
 )
 
 func main() {
-    // Initialize your Lynx application
-    application := app.NewApplication()
+    pm := lynx.Lynx().GetPluginManager()
     
     // Create custom client configuration
-    config := grpc.ClientConfig{
+    config := lynxgrpc.ClientConfig{
         ServiceName:    "user-service",
-        Discovery:      app.Lynx().GetControlPlane().Discovery(),
+        Discovery:      lynx.Lynx().GetControlPlane().Discovery(),
         TLS:            true,
         TLSAuthType:    4,
         Timeout:        15 * time.Second,
@@ -220,8 +214,8 @@ func main() {
         MaxConnections: 20,
     }
     
-    // Create connection with custom configuration (pass plugin manager to use registered plugin)
-    conn, err := grpc.CreateGrpcClientConnection(config, application.GetPluginManager())
+    // Create connection with custom configuration against the registered plugin.
+    conn, err := lynxgrpc.CreateGrpcClientConnection(config, pm)
     if err != nil {
         log.Fatalf("Failed to create gRPC connection: %v", err)
     }
@@ -230,49 +224,24 @@ func main() {
     client := pb.NewUserServiceClient(conn)
     
     // Make requests...
-    
-    // Start the application
-    if err := application.Run(); err != nil {
-        panic(err)
-    }
 }
 ```
 
-### Using with app/subscribe Integration
+### Using with `subscribe` Helpers
 
 ```go
 package main
 
 import (
-    "github.com/go-lynx/lynx/app"
-    "github.com/go-lynx/lynx/app/subscribe"
-    pb "your/protobuf/package"
+    "github.com/go-lynx/lynx/subscribe"
 )
 
 func main() {
-    // Initialize your Lynx application
-    application := app.NewApplication()
-    
-    // Initialize gRPC client integration
+    // These helper functions are currently stubbed during dependency-injection refactoring.
+    // Expect an explicit error until the integration is wired back.
     err := subscribe.InitializeGrpcClientIntegration()
     if err != nil {
-        log.Warnf("gRPC client integration not available: %v", err)
-    }
-    
-    // Get connection using integrated method
-    conn, err := subscribe.GetGrpcConnection("user-service")
-    if err != nil {
-        log.Fatalf("Failed to get gRPC connection: %v", err)
-    }
-    
-    // Create gRPC client
-    client := pb.NewUserServiceClient(conn)
-    
-    // Make requests...
-    
-    // Start the application
-    if err := application.Run(); err != nil {
-        panic(err)
+        log.Warnf("subscribe helper unavailable: %v", err)
     }
 }
 ```
@@ -326,18 +295,12 @@ func main() {
 package main
 
 import (
-    "github.com/go-lynx/lynx/app/subscribe"
+    lynx "github.com/go-lynx/lynx"
+    lynxgrpc "github.com/go-lynx/lynx-grpc"
 )
 
 func main() {
-    // Check health of all gRPC connections
-    err := subscribe.HealthCheckGrpcConnections()
-    if err != nil {
-        log.Errorf("gRPC connections unhealthy: %v", err)
-    }
-    
-    // Get connection status
-    status, err := subscribe.GetGrpcConnectionStatus()
+    status, err := lynxgrpc.GetGrpcClientConnectionStatus(lynx.Lynx().GetPluginManager())
     if err != nil {
         log.Errorf("Failed to get connection status: %v", err)
     } else {
@@ -354,57 +317,53 @@ func main() {
 package main
 
 import (
-    "github.com/go-lynx/lynx/app/subscribe"
-    "github.com/go-lynx/lynx/plugins/service/grpc"
+    lynx "github.com/go-lynx/lynx"
+    lynxgrpc "github.com/go-lynx/lynx-grpc"
 )
 
 func main() {
-    // Get metrics
-    metrics, err := subscribe.GetGrpcMetrics()
+    // The client exports Prometheus metrics through the default registry.
+    // Use the connection count helper for a quick runtime check.
+    connectionCount, err := lynxgrpc.GetGrpcClientConnectionCount(lynx.Lynx().GetPluginManager())
     if err != nil {
-        log.Errorf("Failed to get metrics: %v", err)
+        log.Errorf("Failed to get connection count: %v", err)
         return
     }
-    
-    // Access various metrics
-    connectionCount := metrics.GetConnectionCount()
-    activeConnections := metrics.GetActiveConnectionCount()
-    requestCount := metrics.GetRequestCount()
-    errorCount := metrics.GetErrorCount()
-    
-    log.Infof("Connections: %f, Active: %f, Requests: %f, Errors: %f", 
-        connectionCount, activeConnections, requestCount, errorCount)
+
+    log.Infof("Connections: %d", connectionCount)
 }
 ```
+
+For per-method request, retry, and error counters, scrape Prometheus from the application metrics endpoint; there is no stable exported Go helper for raw `ClientMetrics` snapshots at the moment.
 
 ## Monitoring
 
 The plugin provides comprehensive Prometheus metrics:
 
 ### Connection Metrics
-- `grpc_client_connections_total`: Total number of gRPC client connections
-- `grpc_client_connections_active`: Number of active gRPC client connections
-- `grpc_client_connections_created_total`: Total number of connections created
-- `grpc_client_connections_closed_total`: Total number of connections closed
-- `grpc_client_connections_failed_total`: Total number of failed connection attempts
+- `lynx_grpc_client_connections_total`: Total number of gRPC client connections
+- `lynx_grpc_client_connections_active`: Number of active gRPC client connections
+- `lynx_grpc_client_connections_created_total`: Total number of connections created
+- `lynx_grpc_client_connections_closed_total`: Total number of connections closed
+- `lynx_grpc_client_connections_failed_total`: Total number of failed connection attempts
 
 ### Request Metrics
-- `grpc_client_requests_total`: Total number of gRPC client requests
-- `grpc_client_request_duration_seconds`: Duration of gRPC client requests
-- `grpc_client_request_errors_total`: Total number of request errors
+- `lynx_grpc_client_requests_total`: Total number of gRPC client requests
+- `lynx_grpc_client_request_duration_seconds`: Duration of gRPC client requests
+- `lynx_grpc_client_request_errors_total`: Total number of request errors
 
 ### Retry Metrics
-- `grpc_client_retries_total`: Total number of retries
-- `grpc_client_retry_duration_seconds`: Duration of retries
+- `lynx_grpc_client_retries_total`: Total number of retries
+- `lynx_grpc_client_retry_duration_seconds`: Duration of retries
 
 ### Health Check Metrics
-- `grpc_client_health_checks_total`: Total number of health checks
-- `grpc_client_health_check_duration_seconds`: Duration of health checks
+- `lynx_grpc_client_health_checks_total`: Total number of health checks
+- `lynx_grpc_client_health_check_duration_seconds`: Duration of health checks
 
 ### Connection Pool Metrics
-- `grpc_client_pool_size`: Number of connections per service (channel pool size)
-- `grpc_client_pool_active`: Number of active connections in pool
-- `grpc_client_pool_idle`: Number of idle connections in pool
+- `lynx_grpc_client_pool_size`: Number of connections per service (channel pool size)
+- `lynx_grpc_client_pool_active`: Number of active connections in pool
+- `lynx_grpc_client_pool_idle`: Number of idle connections in pool
 
 ### Multi-Channel Pool Features
 - **Multiple Connections Per Service**: Each service can have multiple connections (channels) for better performance
@@ -417,11 +376,11 @@ The plugin provides comprehensive Prometheus metrics:
 - **Idle Connection Cleanup**: Idle connections are automatically closed after timeout
 
 ### Message Metrics
-- `grpc_client_message_size_bytes`: Size of gRPC messages
+- `lynx_grpc_client_message_size_bytes`: Size of gRPC messages
 
 ### Circuit Breaker Metrics
-- `grpc_client_circuit_breaker_state`: State of circuit breaker
-- `grpc_client_circuit_breaker_trips_total`: Total number of circuit breaker trips
+- `lynx_grpc_client_circuit_breaker_state`: State of circuit breaker
+- `lynx_grpc_client_circuit_breaker_trips_total`: Total number of circuit breaker trips
 
 ## Error Handling
 
@@ -476,17 +435,13 @@ lynx:
 
 ### Health Check Endpoints
 
-Use the health check endpoints to monitor connection status:
+Prefer the direct plugin helpers over `subscribe` wrappers while the integrated loader remains under refactor:
 
 ```go
-// Check all connections
-err := subscribe.HealthCheckGrpcConnections()
-
-// Get specific connection status
-status, err := subscribe.GetGrpcConnectionStatus()
+status, err := lynxgrpc.GetGrpcClientConnectionStatus(lynx.Lynx().GetPluginManager())
+count, err := lynxgrpc.GetGrpcClientConnectionCount(lynx.Lynx().GetPluginManager())
 ```
 
 ## License
 
 Apache License 2.0
-
