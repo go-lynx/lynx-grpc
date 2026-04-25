@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/go-lynx/lynx/pkg/security"
 	"google.golang.org/grpc/credentials"
 	"gopkg.in/yaml.v3"
 )
@@ -144,6 +145,9 @@ func (tm *TLSManager) RemoveService(serviceName string) {
 func (tm *TLSManager) validateConfig(config *TLSConfig) error {
 	if !config.Enabled {
 		return nil
+	}
+	if err := security.ValidateTLSProductionPolicy("grpc", true, config.InsecureSkipVerify); err != nil {
+		return err
 	}
 
 	// Validate TLS version security

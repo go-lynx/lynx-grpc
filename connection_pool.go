@@ -55,6 +55,7 @@ type serviceConnectionPool struct {
 	serviceName     string
 	connections     []*pooledConnection
 	mu              sync.RWMutex
+	createMu        sync.Mutex
 	roundRobinIndex int64 // Atomic counter for round-robin selection
 	createdAt       time.Time
 	lastUsed        time.Time
@@ -162,14 +163,65 @@ func (p *ConnectionPool) getConnectionWithRetry(serviceName string, createFunc f
 
 // GetConnection retrieves a connection from the service pool
 func (sp *serviceConnectionPool) GetConnection(strategy ConnectionSelectionStrategy, maxConns int, createFunc func() (*grpc.ClientConn, error), metrics *ClientMetrics) (*grpc.ClientConn, error) {
-	sp.mu.Lock()
-	defer sp.mu.Unlock()
+	if conn := sp.selectReusableConnection(strategy, metrics); conn != nil {
+		return conn, nil
+	}
+
+	sp.createMu.Lock()
+	defer sp.createMu.Unlock()
+
+	if conn := sp.selectReusableConnection(strategy, metrics); conn != nil {
+		return conn, nil
+	}
+
+	evicted := sp.prepareForCreate(maxConns)
+	for _, conn := range evicted {
+		conn.mu.Lock()
+		_ = conn.conn.Close()
+		conn.mu.Unlock()
+	}
+
+	conn, err := createFunc()
+	if err != nil {
+		if metrics != nil {
+			metrics.RecordConnectionPoolMiss(sp.serviceName)
+		}
+		return nil, fmt.Errorf("failed to create connection for service %s: %w", sp.serviceName, err)
+	}
 
 	now := time.Now()
+	pooled := &pooledConnection{
+		conn:        conn,
+		serviceName: sp.serviceName,
+		createdAt:   now,
+		lastUsed:    now,
+		useCount:    1,
+	}
+
+	sp.mu.Lock()
+	sp.lastUsed = now
+	sp.connections = append(sp.connections, pooled)
+	size := len(sp.connections)
+	sp.mu.Unlock()
+
+	if metrics != nil {
+		metrics.RecordConnectionPoolMiss(sp.serviceName)
+		metrics.RecordConnectionPoolSize(sp.serviceName, size)
+	}
+
+	return conn, nil
+}
+
+func (sp *serviceConnectionPool) selectReusableConnection(strategy ConnectionSelectionStrategy, metrics *ClientMetrics) *grpc.ClientConn {
+	now := time.Now()
+	sp.mu.Lock()
+
 	sp.lastUsed = now
 
 	// Clean up unhealthy connections first
-	sp.cleanupUnhealthy()
+	unhealthy := sp.cleanupUnhealthyLocked()
+	defer closePooledConnections(unhealthy)
+	defer sp.mu.Unlock()
 
 	// Select a healthy connection if available
 	if len(sp.connections) > 0 {
@@ -180,41 +232,26 @@ func (sp *serviceConnectionPool) GetConnection(strategy ConnectionSelectionStrat
 			if metrics != nil {
 				metrics.RecordConnectionPoolHit(sp.serviceName)
 			}
-			return conn.conn, nil
+			return conn.conn
 		}
 	}
+	return nil
+}
 
-	// Need to create a new connection
+func (sp *serviceConnectionPool) prepareForCreate(maxConns int) []*pooledConnection {
+	if maxConns <= 0 {
+		maxConns = 1
+	}
+	sp.mu.Lock()
+	defer sp.mu.Unlock()
+
+	var evicted []*pooledConnection
 	if len(sp.connections) >= maxConns {
-		// Remove least used connection to make room
-		sp.evictLeastUsed()
-	}
-
-	// Create new connection
-	conn, err := createFunc()
-	if err != nil {
-		if metrics != nil {
-			metrics.RecordConnectionPoolMiss(sp.serviceName)
+		if conn := sp.evictLeastUsedLocked(); conn != nil {
+			evicted = append(evicted, conn)
 		}
-		return nil, fmt.Errorf("failed to create connection for service %s: %w", sp.serviceName, err)
 	}
-
-	// Add to pool
-	pooled := &pooledConnection{
-		conn:        conn,
-		serviceName: sp.serviceName,
-		createdAt:   now,
-		lastUsed:    now,
-		useCount:    1,
-	}
-	sp.connections = append(sp.connections, pooled)
-
-	if metrics != nil {
-		metrics.RecordConnectionPoolMiss(sp.serviceName)
-		metrics.RecordConnectionPoolSize(sp.serviceName, len(sp.connections))
-	}
-
-	return conn, nil
+	return evicted
 }
 
 // selectConnection selects a connection based on the strategy
@@ -258,26 +295,37 @@ func isConnectionHealthy(conn *grpc.ClientConn) bool {
 	return state == connectivity.Ready || state == connectivity.Idle
 }
 
-// cleanupUnhealthy removes unhealthy connections from the pool
-func (sp *serviceConnectionPool) cleanupUnhealthy() {
+// cleanupUnhealthyLocked removes unhealthy connections from the pool and returns them for closing.
+// Caller must hold sp.mu.
+func (sp *serviceConnectionPool) cleanupUnhealthyLocked() []*pooledConnection {
 	healthy := make([]*pooledConnection, 0, len(sp.connections))
+	unhealthy := make([]*pooledConnection, 0)
 	for _, conn := range sp.connections {
 		if isConnectionHealthy(conn.conn) {
 			healthy = append(healthy, conn)
 		} else {
-			// Close unhealthy connection
-			conn.mu.Lock()
-			_ = conn.conn.Close()
-			conn.mu.Unlock()
+			unhealthy = append(unhealthy, conn)
 		}
 	}
 	sp.connections = healthy
+	return unhealthy
 }
 
 // evictLeastUsed removes the least used connection
 func (sp *serviceConnectionPool) evictLeastUsed() {
+	sp.mu.Lock()
+	conn := sp.evictLeastUsedLocked()
+	sp.mu.Unlock()
+	if conn != nil {
+		conn.mu.Lock()
+		_ = conn.conn.Close()
+		conn.mu.Unlock()
+	}
+}
+
+func (sp *serviceConnectionPool) evictLeastUsedLocked() *pooledConnection {
 	if len(sp.connections) == 0 {
-		return
+		return nil
 	}
 
 	var leastUsed *pooledConnection
@@ -294,12 +342,10 @@ func (sp *serviceConnectionPool) evictLeastUsed() {
 	}
 
 	if leastUsed != nil && minIndex >= 0 {
-		leastUsed.mu.Lock()
-		_ = leastUsed.conn.Close()
-		leastUsed.mu.Unlock()
 		// Remove from slice
 		sp.connections = append(sp.connections[:minIndex], sp.connections[minIndex+1:]...)
 	}
+	return leastUsed
 }
 
 // CloseConnection closes all connections for a specific service
@@ -308,28 +354,28 @@ func (p *ConnectionPool) CloseConnection(serviceName string) error {
 		return nil
 	}
 
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if servicePool, exists := p.services[serviceName]; exists {
-		servicePool.mu.Lock()
-		var lastErr error
-		for _, conn := range servicePool.connections {
-			conn.mu.Lock()
-			if err := conn.conn.Close(); err != nil {
-				lastErr = err
-			}
-			conn.mu.Unlock()
-		}
-		servicePool.mu.Unlock()
-		delete(p.services, serviceName)
-		if p.metrics != nil {
-			p.metrics.RecordConnectionPoolSize(serviceName, 0)
-		}
-		return lastErr
+	p.mu.RLock()
+	servicePool, exists := p.services[serviceName]
+	p.mu.RUnlock()
+	if !exists {
+		return nil
 	}
 
-	return nil
+	servicePool.createMu.Lock()
+	defer servicePool.createMu.Unlock()
+
+	lastErr := servicePool.closeAllConnections()
+
+	p.mu.Lock()
+	if current := p.services[serviceName]; current == servicePool {
+		delete(p.services, serviceName)
+	}
+	p.mu.Unlock()
+
+	if p.metrics != nil {
+		p.metrics.RecordConnectionPoolSize(serviceName, 0)
+	}
+	return lastErr
 }
 
 // CloseAll closes all connections in the pool
@@ -342,28 +388,35 @@ func (p *ConnectionPool) CloseAll() error {
 	})
 	p.cleanupWG.Wait()
 
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	p.mu.RLock()
+	servicePools := make(map[string]*serviceConnectionPool, len(p.services))
+	for serviceName, servicePool := range p.services {
+		servicePools[serviceName] = servicePool
+	}
+	p.mu.RUnlock()
 
 	// Collect all service names before deletion for metrics recording
-	serviceNames := make([]string, 0, len(p.services))
-	for serviceName := range p.services {
+	serviceNames := make([]string, 0, len(servicePools))
+	for serviceName := range servicePools {
 		serviceNames = append(serviceNames, serviceName)
 	}
 
 	var lastErr error
-	for serviceName, servicePool := range p.services {
-		servicePool.mu.Lock()
-		for _, conn := range servicePool.connections {
-			conn.mu.Lock()
-			if err := conn.conn.Close(); err != nil {
-				lastErr = err
-			}
-			conn.mu.Unlock()
+	for _, servicePool := range servicePools {
+		servicePool.createMu.Lock()
+		if err := servicePool.closeAllConnections(); err != nil {
+			lastErr = err
 		}
-		servicePool.mu.Unlock()
-		delete(p.services, serviceName)
+		servicePool.createMu.Unlock()
 	}
+
+	p.mu.Lock()
+	for serviceName, servicePool := range servicePools {
+		if current := p.services[serviceName]; current == servicePool {
+			delete(p.services, serviceName)
+		}
+	}
+	p.mu.Unlock()
 
 	// Record metrics for all services that were closed
 	if p.metrics != nil {
@@ -373,6 +426,31 @@ func (p *ConnectionPool) CloseAll() error {
 	}
 
 	return lastErr
+}
+
+func (sp *serviceConnectionPool) closeAllConnections() error {
+	sp.mu.Lock()
+	connections := sp.connections
+	sp.connections = nil
+	sp.mu.Unlock()
+
+	var lastErr error
+	for _, conn := range connections {
+		conn.mu.Lock()
+		if err := conn.conn.Close(); err != nil {
+			lastErr = err
+		}
+		conn.mu.Unlock()
+	}
+	return lastErr
+}
+
+func closePooledConnections(connections []*pooledConnection) {
+	for _, conn := range connections {
+		conn.mu.Lock()
+		_ = conn.conn.Close()
+		conn.mu.Unlock()
+	}
 }
 
 // TotalConnectionCount returns the total number of connections across all services in the pool.
