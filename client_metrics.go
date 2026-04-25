@@ -4,6 +4,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-lynx/lynx/log"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 )
@@ -170,7 +171,7 @@ func registerOrReuseGauge(opts prometheus.GaugeOpts) prometheus.Gauge {
 		if existing, ok := unwrapRegisteredGauge(err); ok {
 			return existing
 		}
-		panic(err)
+		log.Warnf("grpc client metric %s could not be registered globally: %v", opts.Name, err)
 	}
 	return collector
 }
@@ -181,7 +182,7 @@ func registerOrReuseCounter(opts prometheus.CounterOpts) prometheus.Counter {
 		if existing, ok := unwrapRegisteredCounter(err); ok {
 			return existing
 		}
-		panic(err)
+		log.Warnf("grpc client metric %s could not be registered globally: %v", opts.Name, err)
 	}
 	return collector
 }
@@ -192,7 +193,7 @@ func registerOrReuseGaugeVec(opts prometheus.GaugeOpts, labels []string) *promet
 		if existing, ok := unwrapRegisteredGaugeVec(err); ok {
 			return existing
 		}
-		panic(err)
+		log.Warnf("grpc client metric %s could not be registered globally: %v", opts.Name, err)
 	}
 	return collector
 }
@@ -203,7 +204,7 @@ func registerOrReuseCounterVec(opts prometheus.CounterOpts, labels []string) *pr
 		if existing, ok := unwrapRegisteredCounterVec(err); ok {
 			return existing
 		}
-		panic(err)
+		log.Warnf("grpc client metric %s could not be registered globally: %v", opts.Name, err)
 	}
 	return collector
 }
@@ -214,7 +215,7 @@ func registerOrReuseHistogramVec(opts prometheus.HistogramOpts, labels []string)
 		if existing, ok := unwrapRegisteredHistogramVec(err); ok {
 			return existing
 		}
-		panic(err)
+		log.Warnf("grpc client metric %s could not be registered globally: %v", opts.Name, err)
 	}
 	return collector
 }

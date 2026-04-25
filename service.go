@@ -65,13 +65,15 @@ type Service struct {
 	loggerProvider       func() interface{}
 	certProvider         func() interface{}
 	controlPlaneProvider func() interface{}
-	// Port availability check cache to avoid frequent retries on failures
-	// Note: We only cache failures, never successes, to ensure real-time detection
+	// Port availability check cache to avoid hammering local ports from health probes.
+	// Failures and successes are cached briefly.
 	portCheckCache struct {
-		mu          sync.RWMutex
-		lastFailure time.Time
-		lastError   error
-		retryWindow time.Duration // Avoid retrying failed checks within this window
+		mu            sync.RWMutex
+		lastFailure   time.Time
+		lastSuccess   time.Time
+		lastError     error
+		retryWindow   time.Duration // Avoid retrying failed checks within this window
+		successWindow time.Duration
 	}
 	// Track whether we've already logged the "resource not found" message
 	readinessResourceLogged struct {
@@ -80,8 +82,8 @@ type Service struct {
 	}
 	// serverOpts holds optional server options (shutdown timeout, toggles, rate limit, inflight). Set in InitializeResources.
 	serverOpts *serverOptsWithLimiter
-	// confMu protects conf pointer replacement in Configure; mirrors lynx-http's approach.
-	confMu sync.Mutex
+	// confMu protects conf pointer replacement in Configure and health reads.
+	confMu sync.RWMutex
 }
 
 // healthStatusPoller periodically syncs health serving status with required upstream readiness.
@@ -138,12 +140,15 @@ func NewGrpcService() *Service {
 		// Initialize port check cache to avoid frequent retries on failures
 		// Success checks are never cached to ensure real-time failure detection
 		portCheckCache: struct {
-			mu          sync.RWMutex
-			lastFailure time.Time
-			lastError   error
-			retryWindow time.Duration
+			mu            sync.RWMutex
+			lastFailure   time.Time
+			lastSuccess   time.Time
+			lastError     error
+			retryWindow   time.Duration
+			successWindow time.Duration
 		}{
-			retryWindow: 500 * time.Millisecond, // Short window to avoid hammering failed ports
+			retryWindow:   500 * time.Millisecond,
+			successWindow: time.Second,
 		},
 	}
 }
@@ -554,6 +559,8 @@ func (g *Service) CheckHealth() error {
 	if g.server == nil {
 		return fmt.Errorf("gRPC server is not initialized")
 	}
+	g.confMu.RLock()
+	defer g.confMu.RUnlock()
 
 	// Check server configuration
 	if g.conf == nil || g.conf.Addr == "" {
@@ -579,9 +586,8 @@ func (g *Service) CheckHealth() error {
 	return nil
 }
 
-// checkPortAvailability checks if the configured port is available for binding.
-// It always performs a real network check to ensure real-time failure detection.
-// Failed checks are cached briefly to avoid hammering unreachable ports.
+// checkPortAvailability checks if the configured port is reachable.
+// Successful and failed checks are cached briefly to avoid hammering health-check ports.
 func (g *Service) checkPortAvailability() error {
 	if g.conf == nil || g.conf.Addr == "" {
 		return fmt.Errorf("server address not configured")
@@ -606,36 +612,42 @@ func (g *Service) checkPortAvailability() error {
 		return nil
 	}
 
-	// Check if we recently failed and should skip retry to avoid hammering
+	// Check if we recently checked this port and should skip retry to avoid hammering.
 	g.portCheckCache.mu.RLock()
 	lastFailure := g.portCheckCache.lastFailure
+	lastSuccess := g.portCheckCache.lastSuccess
 	lastError := g.portCheckCache.lastError
 	retryWindow := g.portCheckCache.retryWindow
+	successWindow := g.portCheckCache.successWindow
 	g.portCheckCache.mu.RUnlock()
 
 	now := time.Now()
+	if !lastSuccess.IsZero() && successWindow > 0 && now.Sub(lastSuccess) < successWindow {
+		return nil
+	}
 	// If we have a recent failure within retry window, return cached error
 	// This avoids hammering unreachable ports while still checking frequently
 	if lastError != nil && !lastFailure.IsZero() && now.Sub(lastFailure) < retryWindow {
 		return fmt.Errorf("port %s is not reachable (cached): %v", norm, lastError)
 	}
 
-	// Always perform actual network check for real-time detection
-	// This ensures we detect server crashes immediately, not after cache expiry
+	// Perform actual network check after the short success/failure cache expires.
 	conn, err := net.DialTimeout("tcp", norm, 2*time.Second)
 	if err != nil {
 		// Cache failure to avoid frequent retries
 		g.portCheckCache.mu.Lock()
 		g.portCheckCache.lastFailure = now
+		g.portCheckCache.lastSuccess = time.Time{}
 		g.portCheckCache.lastError = err
 		g.portCheckCache.mu.Unlock()
 		return fmt.Errorf("port %s is not reachable: %v", norm, err)
 	}
 	_ = conn.Close()
 
-	// Clear cache on success - we never cache successes to ensure real-time detection
+	// Clear failure cache on success and remember success briefly.
 	g.portCheckCache.mu.Lock()
 	g.portCheckCache.lastFailure = time.Time{} // Clear failure cache
+	g.portCheckCache.lastSuccess = now
 	g.portCheckCache.lastError = nil
 	g.portCheckCache.mu.Unlock()
 

@@ -7,6 +7,7 @@ import (
 
 	"github.com/go-lynx/lynx-grpc/conf"
 	"github.com/go-lynx/lynx/plugins"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -220,6 +221,31 @@ func TestClientMetrics(t *testing.T) {
 	assert.Equal(t, float64(0), metrics.GetActiveConnectionCount())
 	assert.GreaterOrEqual(t, metrics.GetRequestCount(), beforeRequests+3)
 	assert.GreaterOrEqual(t, metrics.GetErrorCount(), beforeErrors+2)
+}
+
+func TestClientMetricsInitializeDoesNotPanicOnCollectorConflict(t *testing.T) {
+	originalRegisterer := prometheus.DefaultRegisterer
+	originalGatherer := prometheus.DefaultGatherer
+	registry := prometheus.NewRegistry()
+	prometheus.DefaultRegisterer = registry
+	prometheus.DefaultGatherer = registry
+	t.Cleanup(func() {
+		prometheus.DefaultRegisterer = originalRegisterer
+		prometheus.DefaultGatherer = originalGatherer
+	})
+
+	conflictingCounter := prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: "lynx",
+		Subsystem: "grpc_client",
+		Name:      "connections_active",
+		Help:      "Conflicting metric registered by host application",
+	})
+	require.NoError(t, prometheus.Register(conflictingCounter))
+
+	require.NotPanics(t, func() {
+		metrics := NewClientMetrics()
+		metrics.Initialize()
+	})
 }
 
 func TestNewGrpcClientPluginReusesRegisteredMetrics(t *testing.T) {

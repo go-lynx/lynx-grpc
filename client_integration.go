@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/go-kratos/kratos/v2/registry"
 	"github.com/go-kratos/kratos/v2/selector"
@@ -60,8 +61,8 @@ func (g *ClientIntegration) BuildGrpcSubscriptions(cfg *conf.Subscriptions) (map
 			ServiceName: name,
 			Discovery:   g.discovery,
 			TLS:         item.GetTls(),
-			Timeout:     g.clientPlugin.conf.GetDefaultTimeout().AsDuration(),
-			KeepAlive:   g.clientPlugin.conf.GetDefaultKeepAlive().AsDuration(),
+			Timeout:     g.clientPlugin.defaultTimeout(),
+			KeepAlive:   g.clientPlugin.defaultKeepAlive(),
 			Middleware:  g.clientPlugin.getDefaultMiddleware(),
 		}
 
@@ -122,7 +123,29 @@ func (g *ClientIntegration) CloseConnection(serviceName string) error {
 		return fmt.Errorf("gRPC client plugin not initialized")
 	}
 
-	return g.clientPlugin.connectionPool.CloseConnection(serviceName)
+	return g.clientPlugin.CloseServiceConnection(serviceName)
+}
+
+func (c *ClientPlugin) defaultTimeout() time.Duration {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.conf != nil && c.conf.DefaultTimeout != nil {
+		if d := c.conf.DefaultTimeout.AsDuration(); d > 0 {
+			return d
+		}
+	}
+	return 10 * time.Second
+}
+
+func (c *ClientPlugin) defaultKeepAlive() time.Duration {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.conf != nil && c.conf.DefaultKeepAlive != nil {
+		if d := c.conf.DefaultKeepAlive.AsDuration(); d > 0 {
+			return d
+		}
+	}
+	return 30 * time.Second
 }
 
 // GetConnectionStatus returns the status of all connections

@@ -321,6 +321,10 @@ func (c *ClientPlugin) StopContext(ctx context.Context, _ plugins.Plugin) error 
 // CloseServiceConnection closes connections for the given service (pool and legacy map).
 // Use this when closing a single service so the next GetConnection creates a fresh connection.
 func (c *ClientPlugin) CloseServiceConnection(serviceName string) error {
+	serviceName = strings.TrimSpace(serviceName)
+	if serviceName == "" {
+		return fmt.Errorf("service name cannot be empty")
+	}
 	c.mu.Lock()
 	delete(c.connections, serviceName)
 	c.mu.Unlock()
@@ -485,41 +489,47 @@ func (c *ClientPlugin) CreateConnection(config ClientConfig) (*grpc.ClientConn, 
 
 // createConnection creates a connection using default configuration
 func (c *ClientPlugin) createConnection(serviceName string) (*grpc.ClientConn, error) {
+	c.mu.RLock()
+	discovery := c.discovery
+	tlsEnable := false
+	tlsAuthType := int32(0)
+	maxRetries := int32(3)
+	defaultTimeout := 10 * time.Second
+	defaultKeepAlive := 30 * time.Second
+	retryBackoff := time.Second
+	maxConnections := int32(10)
+	if c.conf != nil {
+		tlsEnable = c.conf.GetTlsEnable()
+		tlsAuthType = c.conf.GetTlsAuthType()
+		if c.conf.MaxRetries > 0 {
+			maxRetries = c.conf.MaxRetries
+		}
+		if c.conf.DefaultTimeout != nil {
+			defaultTimeout = c.conf.DefaultTimeout.AsDuration()
+		}
+		if c.conf.DefaultKeepAlive != nil {
+			defaultKeepAlive = c.conf.DefaultKeepAlive.AsDuration()
+		}
+		if c.conf.RetryBackoff != nil {
+			retryBackoff = c.conf.RetryBackoff.AsDuration()
+		}
+		if c.conf.MaxConnections > 0 {
+			maxConnections = c.conf.MaxConnections
+		}
+	}
+	c.mu.RUnlock()
+
 	config := ClientConfig{
-		ServiceName: serviceName,
-		Discovery:   c.discovery,
-		TLS:         c.conf.GetTlsEnable(),
-		TLSAuthType: c.conf.GetTlsAuthType(),
-		MaxRetries:  int(c.conf.MaxRetries),
-		Middleware:  c.getDefaultMiddleware(),
-	}
-
-	// Set timeout with nil check
-	if c.conf.DefaultTimeout != nil {
-		config.Timeout = c.conf.DefaultTimeout.AsDuration()
-	} else {
-		config.Timeout = 10 * time.Second
-	}
-
-	// Set keep alive with nil check
-	if c.conf.DefaultKeepAlive != nil {
-		config.KeepAlive = c.conf.DefaultKeepAlive.AsDuration()
-	} else {
-		config.KeepAlive = 30 * time.Second
-	}
-
-	// Set retry backoff with nil check
-	if c.conf.RetryBackoff != nil {
-		config.RetryBackoff = c.conf.RetryBackoff.AsDuration()
-	} else {
-		config.RetryBackoff = 1 * time.Second
-	}
-
-	// Set max connections
-	if c.conf.MaxConnections > 0 {
-		config.MaxConnections = int(c.conf.MaxConnections)
-	} else {
-		config.MaxConnections = 10
+		ServiceName:    serviceName,
+		Discovery:      discovery,
+		TLS:            tlsEnable,
+		TLSAuthType:    tlsAuthType,
+		MaxRetries:     int(maxRetries),
+		Middleware:     c.getDefaultMiddleware(),
+		Timeout:        defaultTimeout,
+		KeepAlive:      defaultKeepAlive,
+		RetryBackoff:   retryBackoff,
+		MaxConnections: int(maxConnections),
 	}
 
 	return c.CreateConnection(config)
@@ -883,7 +893,9 @@ func (c *ClientPlugin) validateConfiguration() error {
 
 // SetDiscovery sets the service discovery instance
 func (c *ClientPlugin) SetDiscovery(discovery registry.Discovery) {
+	c.mu.Lock()
 	c.discovery = discovery
+	c.mu.Unlock()
 	if c.rt != nil && discovery != nil {
 		if err := c.rt.RegisterPrivateResource("discovery", discovery); err != nil {
 			log.Warnf("failed to update gRPC client private discovery resource: %v", err)
@@ -900,7 +912,13 @@ func (c *ClientPlugin) PluginProtocol() plugins.PluginProtocol {
 
 // buildSubscribeServiceConfig builds ClientConfig for a subscribe service by name (for use by GetSubscribeServiceConnection and CheckRequiredServices).
 func (c *ClientPlugin) buildSubscribeServiceConfig(serviceName string) (ClientConfig, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
 	var serviceConfig *conf.SubscribeService
+	if c.conf == nil {
+		return ClientConfig{}, fmt.Errorf("gRPC client configuration is nil")
+	}
 	for _, svc := range c.conf.SubscribeServices {
 		if svc.Name == serviceName {
 			serviceConfig = svc
@@ -974,36 +992,97 @@ func (c *ClientPlugin) CheckRequiredServices() error {
 }
 
 func (c *ClientPlugin) CheckRequiredServicesContext(ctx context.Context) error {
-	for _, svc := range c.conf.SubscribeServices {
-		if !svc.Required {
-			continue
-		}
-		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("gRPC client startup canceled while checking required services: %w", err)
-		}
+	c.mu.RLock()
+	var services []*conf.SubscribeService
+	if c.conf != nil {
+		services = append(services, c.conf.SubscribeServices...)
+	}
+	c.mu.RUnlock()
 
-		log.Infof("Checking required service: %s", svc.Name)
-
-		config, err := c.buildSubscribeServiceConfig(svc.Name)
-		if err != nil {
-			return fmt.Errorf("required service %s config: %w", svc.Name, err)
+	required := make([]*conf.SubscribeService, 0, len(services))
+	for _, svc := range services {
+		if svc.Required {
+			required = append(required, svc)
 		}
-
-		// Use buildConnection only (no pool) so closing does not leave a closed conn in the pool
-		conn, err := c.buildConnectionWithContext(ctx, config)
-		if err != nil {
-			return fmt.Errorf("required service %s is not available: %w", svc.Name, err)
-		}
-		if conn != nil {
-			if err := conn.Close(); err != nil {
-				log.Error(err)
-				return err
-			}
-		}
-
-		log.Infof("Required service %s is available", svc.Name)
+	}
+	if len(required) == 0 {
+		return nil
 	}
 
+	const maxConcurrentRequiredChecks = 8
+	limit := maxConcurrentRequiredChecks
+	if len(required) < limit {
+		limit = len(required)
+	}
+
+	checkCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	jobs := make(chan *conf.SubscribeService)
+	errCh := make(chan error, len(required))
+	var wg sync.WaitGroup
+
+	for i := 0; i < limit; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for svc := range jobs {
+				if err := c.checkRequiredService(checkCtx, svc); err != nil {
+					errCh <- err
+					cancel()
+				}
+			}
+		}()
+	}
+
+dispatch:
+	for _, svc := range required {
+		select {
+		case <-checkCtx.Done():
+			break dispatch
+		case jobs <- svc:
+		}
+	}
+	close(jobs)
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		if err != nil {
+			return err
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("gRPC client startup canceled while checking required services: %w", err)
+	}
+	return nil
+}
+
+func (c *ClientPlugin) checkRequiredService(ctx context.Context, svc *conf.SubscribeService) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("gRPC client startup canceled while checking required services: %w", err)
+	}
+
+	log.Infof("Checking required service: %s", svc.Name)
+
+	config, err := c.buildSubscribeServiceConfig(svc.Name)
+	if err != nil {
+		return fmt.Errorf("required service %s config: %w", svc.Name, err)
+	}
+
+	// Use buildConnection only (no pool) so closing does not leave a closed conn in the pool.
+	conn, err := c.buildConnectionWithContext(ctx, config)
+	if err != nil {
+		return fmt.Errorf("required service %s is not available: %w", svc.Name, err)
+	}
+	if conn != nil {
+		if err := conn.Close(); err != nil {
+			log.Error(err)
+			return err
+		}
+	}
+
+	log.Infof("Required service %s is available", svc.Name)
 	return nil
 }
 

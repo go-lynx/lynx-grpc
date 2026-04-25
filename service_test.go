@@ -73,9 +73,15 @@ func TestCheckHealth(t *testing.T) {
 	assert.Contains(t, err.Error(), "gRPC server is not initialized")
 
 	// Test with mock server running but port unavailable
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	unusedAddr := listener.Addr().String()
+	require.NoError(t, listener.Close())
+
+	plugin.conf.Addr = unusedAddr
 	plugin.server = grpc.NewServer()
 	err = plugin.CheckHealth()
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not listening")
 }
 
