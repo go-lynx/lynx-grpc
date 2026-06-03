@@ -1,3 +1,5 @@
+// This file provides ClientIntegration, a higher-level helper that bridges the gRPC client plugin
+// with the Lynx app subscription model, building connections from app-level configuration.
 package grpc
 
 import (

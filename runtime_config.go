@@ -1,3 +1,4 @@
+// This file provides helpers for rebuilding server options and connection pools from updated configuration.
 package grpc
 
 import (

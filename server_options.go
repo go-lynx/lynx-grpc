@@ -3,7 +3,6 @@
 package grpc
 
 import (
-	"sync"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -74,20 +73,3 @@ func defaultServerOptions() ServerOptions {
 	}
 }
 
-// serverOptionsCache is the loaded and parsed server options (set in InitializeResources).
-type serverOptionsCache struct {
-	mu    sync.RWMutex
-	value *serverOptsWithLimiter
-}
-
-func (c *serverOptionsCache) get() *serverOptsWithLimiter {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.value
-}
-
-func (c *serverOptionsCache) set(v *serverOptsWithLimiter) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.value = v
-}

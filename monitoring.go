@@ -1,3 +1,5 @@
+// This file implements server-side Prometheus metrics, request logging, and interceptor chains
+// for the gRPC service plugin (rate limit, in-flight, circuit breaker, metrics, logging).
 package grpc
 
 import (
@@ -121,7 +123,7 @@ func (g *Service) recordServerError(errorType string) {
 
 // getMetricsHandler returns a gRPC UnaryServerInterceptor that records per-method metrics (FullMethod).
 func (g *Service) getMetricsHandler() grpc.UnaryServerInterceptor {
-	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		start := time.Now()
 		resp, err := handler(ctx, req)
 		duration := time.Since(start)
@@ -155,7 +157,7 @@ func peerAddrFromContext(ctx context.Context) string {
 
 // getServerLoggingInterceptor returns a gRPC UnaryServerInterceptor that logs each request and sets Trace-Id/Span-Id in trailing metadata.
 func (g *Service) getServerLoggingInterceptor() grpc.UnaryServerInterceptor {
-	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		start := time.Now()
 		resp, err := handler(ctx, req)
 		duration := time.Since(start)
@@ -180,7 +182,7 @@ func (g *Service) getServerLoggingInterceptor() grpc.UnaryServerInterceptor {
 
 // getRateLimitUnaryInterceptor returns a UnaryServerInterceptor that enforces rate limit when serverOpts has a limiter.
 func (g *Service) getRateLimitUnaryInterceptor() grpc.UnaryServerInterceptor {
-	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		if g.serverOpts == nil || g.serverOpts.limiter == nil {
 			return handler(ctx, req)
 		}
@@ -194,7 +196,7 @@ func (g *Service) getRateLimitUnaryInterceptor() grpc.UnaryServerInterceptor {
 
 // getInflightUnaryInterceptor returns a UnaryServerInterceptor that limits concurrent unary RPCs when serverOpts has a semaphore.
 func (g *Service) getInflightUnaryInterceptor() grpc.UnaryServerInterceptor {
-	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		if g.serverOpts == nil || g.serverOpts.inflightSem == nil {
 			return handler(ctx, req)
 		}
@@ -211,12 +213,12 @@ func (g *Service) getInflightUnaryInterceptor() grpc.UnaryServerInterceptor {
 
 // getServerCircuitBreakerUnaryInterceptor returns a UnaryServerInterceptor that opens the circuit after failure threshold and returns Unavailable when open.
 func (g *Service) getServerCircuitBreakerUnaryInterceptor() grpc.UnaryServerInterceptor {
-	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		if g.serverOpts == nil || g.serverOpts.serverCircuitBreaker == nil {
 			return handler(ctx, req)
 		}
 		cb := g.serverOpts.serverCircuitBreaker
-		var resp interface{}
+		var resp any
 		var rpcErr error
 		err := cb.Execute(ctx, func(ctx context.Context) error {
 			resp, rpcErr = handler(ctx, req)
@@ -257,7 +259,7 @@ func (g *Service) getServerInterceptorChain() []grpc.UnaryServerInterceptor {
 
 // getServerCircuitBreakerStreamInterceptor returns a StreamServerInterceptor that applies the same circuit breaker to stream RPCs.
 func (g *Service) getServerCircuitBreakerStreamInterceptor() grpc.StreamServerInterceptor {
-	return func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
 		if g.serverOpts == nil || g.serverOpts.serverCircuitBreaker == nil {
 			return handler(srv, ss)
 		}
@@ -277,7 +279,7 @@ func (g *Service) getServerCircuitBreakerStreamInterceptor() grpc.StreamServerIn
 
 // getStreamMetricsInterceptor returns a StreamServerInterceptor that records stream RPC metrics.
 func (g *Service) getStreamMetricsInterceptor() grpc.StreamServerInterceptor {
-	return func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
 		start := time.Now()
 		err := handler(srv, ss)
 		duration := time.Since(start)
@@ -293,7 +295,7 @@ func (g *Service) getStreamMetricsInterceptor() grpc.StreamServerInterceptor {
 
 // getStreamLoggingInterceptor returns a StreamServerInterceptor that logs stream start/finish and sets trace id in trailing metadata.
 func (g *Service) getStreamLoggingInterceptor() grpc.StreamServerInterceptor {
-	return func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
 		ctx := ss.Context()
 		start := time.Now()
 		err := handler(srv, ss)

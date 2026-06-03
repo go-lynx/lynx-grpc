@@ -1,3 +1,5 @@
+// This file publishes and registers runtime contract resources (readiness, health, plugin aliases)
+// for both the gRPC service and gRPC client plugins in the Lynx unified runtime.
 package grpc
 
 import "github.com/go-kratos/kratos/v2/log"

@@ -241,19 +241,19 @@ func (lb *LoadBalancer) Close() error {
 	return lastErr
 }
 
-// GetStats returns statistics about the load balancer
-func (lb *LoadBalancer) GetStats() map[string]interface{} {
+// GetStats returns statistics about the load balancer.
+func (lb *LoadBalancer) GetStats() map[string]any {
 	lb.mu.RLock()
 	defer lb.mu.RUnlock()
 
-	stats := map[string]interface{}{
-		"services":       make(map[string]interface{}),
+	stats := map[string]any{
+		"services":       make(map[string]any),
 		"total_services": len(lb.configs),
 	}
 
-	services := make(map[string]interface{})
+	services := make(map[string]any)
 	for serviceName, config := range lb.configs {
-		services[serviceName] = map[string]interface{}{
+		services[serviceName] = map[string]any{
 			"strategy": string(config.Strategy),
 			"filters":  config.Filters,
 			"metadata": config.Metadata,
@@ -389,33 +389,6 @@ func (n *registryNode) Version() string {
 		return version
 	}
 	return ""
-}
-
-// parseWeight parses weight string to int64
-func parseWeight(weightStr string) int64 {
-	// Simple implementation - in production you might want more robust parsing
-	switch weightStr {
-	case "high":
-		return 200
-	case "medium":
-		return 100
-	case "low":
-		return 50
-	default:
-		// Try to parse as number
-		if len(weightStr) > 0 && weightStr[0] >= '0' && weightStr[0] <= '9' {
-			weight := int64(0)
-			for _, c := range weightStr {
-				if c >= '0' && c <= '9' {
-					weight = weight*10 + int64(c-'0')
-				} else {
-					break
-				}
-			}
-			return weight
-		}
-		return 100 // Default weight
-	}
 }
 
 // ConsistentHashSelector implements consistent hash load balancing

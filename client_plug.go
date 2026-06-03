@@ -21,7 +21,7 @@ func init() {
 // GetGrpcClientPlugin retrieves the gRPC client plugin from the plugin manager.
 // When pluginManager is provided (e.g. lynx.Lynx().GetPluginManager()), returns the registered plugin instance.
 // When pluginManager is nil, falls back to lynx.Lynx().GetPluginManager() if available.
-func GetGrpcClientPlugin(pluginManager interface{}) (*ClientPlugin, error) {
+func GetGrpcClientPlugin(pluginManager any) (*ClientPlugin, error) {
 	var pm lynx.PluginManager
 	if pluginManager == nil {
 		if lynx.Lynx() == nil || lynx.Lynx().GetPluginManager() == nil {
@@ -47,7 +47,7 @@ func GetGrpcClientPlugin(pluginManager interface{}) (*ClientPlugin, error) {
 	return clientPlugin, nil
 }
 
-// GetOrCreateGrpcClientPlugin gets existing plugin or creates a new one.
+// GetOrCreateGrpcClientPlugin retrieves an existing plugin from the global factory or creates a new one.
 //
 // Deprecated: Do not use in production. The returned instance may be uninitialized (no config, no connection pool).
 // Use GetGrpcClientPlugin(pluginManager) and GetConnection(serviceName) instead, with the application's PluginManager.
@@ -64,7 +64,7 @@ func GetOrCreateGrpcClientPlugin() *ClientPlugin {
 }
 
 // GetGrpcClientConnection gets a gRPC client connection for the specified service
-func GetGrpcClientConnection(serviceName string, pluginManager interface{}) (*grpc.ClientConn, error) {
+func GetGrpcClientConnection(serviceName string, pluginManager any) (*grpc.ClientConn, error) {
 	plugin, err := GetGrpcClientPlugin(pluginManager)
 	if err != nil {
 		return nil, err
@@ -74,7 +74,7 @@ func GetGrpcClientConnection(serviceName string, pluginManager interface{}) (*gr
 }
 
 // CreateGrpcClientConnection creates a new gRPC client connection with custom configuration
-func CreateGrpcClientConnection(config ClientConfig, pluginManager interface{}) (*grpc.ClientConn, error) {
+func CreateGrpcClientConnection(config ClientConfig, pluginManager any) (*grpc.ClientConn, error) {
 	plugin, err := GetGrpcClientPlugin(pluginManager)
 	if err != nil {
 		return nil, err
@@ -85,7 +85,7 @@ func CreateGrpcClientConnection(config ClientConfig, pluginManager interface{}) 
 
 // CloseGrpcClientConnection closes a gRPC client connection for the given service
 // (pool and legacy map), so the next GetConnection will create a new connection.
-func CloseGrpcClientConnection(serviceName string, pluginManager interface{}) error {
+func CloseGrpcClientConnection(serviceName string, pluginManager any) error {
 	plugin, err := GetGrpcClientPlugin(pluginManager)
 	if err != nil {
 		return err
@@ -95,7 +95,7 @@ func CloseGrpcClientConnection(serviceName string, pluginManager interface{}) er
 }
 
 // GetGrpcClientConnectionStatus returns the status of all gRPC client connections
-func GetGrpcClientConnectionStatus(pluginManager interface{}) (map[string]string, error) {
+func GetGrpcClientConnectionStatus(pluginManager any) (map[string]string, error) {
 	plugin, err := GetGrpcClientPlugin(pluginManager)
 	if err != nil {
 		return nil, err
@@ -105,7 +105,7 @@ func GetGrpcClientConnectionStatus(pluginManager interface{}) (map[string]string
 }
 
 // GetGrpcClientConnectionCount returns the number of active gRPC client connections
-func GetGrpcClientConnectionCount(pluginManager interface{}) (int, error) {
+func GetGrpcClientConnectionCount(pluginManager any) (int, error) {
 	plugin, err := GetGrpcClientPlugin(pluginManager)
 	if err != nil {
 		return 0, err

@@ -11,10 +11,10 @@ import (
 	"github.com/go-lynx/lynx-grpc/conf"
 )
 
-// ValidationError represents a configuration validation error
+// ValidationError represents a configuration validation error.
 type ValidationError struct {
 	Field   string
-	Value   interface{}
+	Value   any
 	Message string
 }
 
@@ -29,8 +29,8 @@ type ValidationResult struct {
 	Warnings []string
 }
 
-// AddError adds a validation error
-func (vr *ValidationResult) AddError(field string, value interface{}, message string) {
+// AddError adds a validation error.
+func (vr *ValidationResult) AddError(field string, value any, message string) {
 	vr.Valid = false
 	vr.Errors = append(vr.Errors, &ValidationError{
 		Field:   field,

@@ -302,16 +302,19 @@ func (tm *TLSManager) fileExists(filename string) bool {
 	return err == nil
 }
 
-// GetStats returns statistics about TLS configurations
-func (tm *TLSManager) GetStats() map[string]interface{} {
-	stats := map[string]interface{}{
+// GetStats returns statistics about TLS configurations.
+func (tm *TLSManager) GetStats() map[string]any {
+	tm.mu.RLock()
+	defer tm.mu.RUnlock()
+
+	stats := map[string]any{
 		"total_services": len(tm.configs),
-		"services":       make(map[string]interface{}),
+		"services":       make(map[string]any),
 	}
 
-	services := make(map[string]interface{})
+	services := make(map[string]any)
 	for serviceName, config := range tm.configs {
-		services[serviceName] = map[string]interface{}{
+		services[serviceName] = map[string]any{
 			"enabled":                     config.Enabled,
 			"insecure_skip_verify":        config.InsecureSkipVerify,
 			"server_name":                 config.ServerName,
@@ -434,26 +437,43 @@ func (tm *TLSManager) validateAndResolvePaths(config *TLSConfig, baseDir string)
 	return nil
 }
 
-// RefreshCredentials refreshes TLS credentials for all services
+// RefreshCredentials refreshes TLS credentials for all services.
+// It snapshots the configs under the read lock, rebuilds credentials without holding any lock
+// (cert file I/O may be slow), and then updates the cache under the write lock.
 func (tm *TLSManager) RefreshCredentials() error {
-	tm.mu.Lock()
-	defer tm.mu.Unlock()
+	// Snapshot configs under read lock to avoid holding a write lock during file I/O.
+	tm.mu.RLock()
+	snapshot := make(map[string]*TLSConfig, len(tm.configs))
+	for name, cfg := range tm.configs {
+		snapshot[name] = cfg
+	}
+	total := len(tm.configs)
+	tm.mu.RUnlock()
 
-	var tlsErrors []string
-	successCount := 0
-
-	for serviceName, config := range tm.configs {
+	type result struct {
+		name  string
+		creds credentials.TransportCredentials
+		err   error
+	}
+	results := make([]result, 0, len(snapshot))
+	for serviceName, config := range snapshot {
 		credList, err := tm.buildCredentials(config)
-		if err != nil {
-			tlsErrors = append(tlsErrors, fmt.Sprintf("service %s: %v", serviceName, err))
-			continue
-		}
-		tm.creds[serviceName] = credList
-		successCount++
+		results = append(results, result{name: serviceName, creds: credList, err: err})
 	}
 
+	var tlsErrors []string
+	tm.mu.Lock()
+	for _, r := range results {
+		if r.err != nil {
+			tlsErrors = append(tlsErrors, fmt.Sprintf("service %s: %v", r.name, r.err))
+			continue
+		}
+		tm.creds[r.name] = r.creds
+	}
+	tm.mu.Unlock()
+
 	if len(tlsErrors) > 0 {
-		return fmt.Errorf("failed to refresh %d/%d services: %s", len(tlsErrors), len(tm.configs), strings.Join(tlsErrors, "; "))
+		return fmt.Errorf("failed to refresh %d/%d services: %s", len(tlsErrors), total, strings.Join(tlsErrors, "; "))
 	}
 
 	return nil

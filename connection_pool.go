@@ -311,18 +311,6 @@ func (sp *serviceConnectionPool) cleanupUnhealthyLocked() []*pooledConnection {
 	return unhealthy
 }
 
-// evictLeastUsed removes the least used connection
-func (sp *serviceConnectionPool) evictLeastUsed() {
-	sp.mu.Lock()
-	conn := sp.evictLeastUsedLocked()
-	sp.mu.Unlock()
-	if conn != nil {
-		conn.mu.Lock()
-		_ = conn.conn.Close()
-		conn.mu.Unlock()
-	}
-}
-
 func (sp *serviceConnectionPool) evictLeastUsedLocked() *pooledConnection {
 	if len(sp.connections) == 0 {
 		return nil
@@ -498,10 +486,10 @@ func (p *ConnectionPool) GetServiceStatus() map[string]string {
 	return out
 }
 
-// GetStats returns statistics about the connection pool
-func (p *ConnectionPool) GetStats() map[string]interface{} {
+// GetStats returns statistics about the connection pool.
+func (p *ConnectionPool) GetStats() map[string]any {
 	if !p.enabled {
-		return map[string]interface{}{
+		return map[string]any{
 			"enabled": false,
 		}
 	}
@@ -509,30 +497,30 @@ func (p *ConnectionPool) GetStats() map[string]interface{} {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
-	stats := map[string]interface{}{
+	stats := map[string]any{
 		"enabled":               true,
 		"max_services":          p.maxServices,
 		"max_conns_per_service": p.maxConnsPerService,
 		"current_services":      len(p.services),
 		"idle_timeout":          p.idleTimeout.String(),
 		"selection_strategy":    p.selectionStrategy.String(),
-		"services":              make(map[string]interface{}),
+		"services":              make(map[string]any),
 	}
 
-	services := make(map[string]interface{})
+	services := make(map[string]any)
 	for serviceName, servicePool := range p.services {
 		servicePool.mu.RLock()
-		serviceStats := map[string]interface{}{
+		serviceStats := map[string]any{
 			"connection_count": len(servicePool.connections),
 			"created_at":       servicePool.createdAt,
 			"last_used":        servicePool.lastUsed,
-			"connections":      make([]map[string]interface{}, 0),
+			"connections":      make([]map[string]any, 0),
 		}
 
-		conns := make([]map[string]interface{}, 0, len(servicePool.connections))
+		conns := make([]map[string]any, 0, len(servicePool.connections))
 		for _, conn := range servicePool.connections {
 			conn.mu.RLock()
-			conns = append(conns, map[string]interface{}{
+			conns = append(conns, map[string]any{
 				"created_at": conn.createdAt,
 				"last_used":  conn.lastUsed,
 				"use_count":  atomic.LoadInt64(&conn.useCount),
