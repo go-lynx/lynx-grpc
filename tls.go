@@ -1,3 +1,5 @@
+// This file loads TLS configuration for the gRPC server using the Lynx certificate provider,
+// supporting both server-only and mutual TLS (mTLS) with optional root CA injection.
 package grpc
 
 import (

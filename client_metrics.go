@@ -1,3 +1,5 @@
+// This file defines Prometheus metrics for the gRPC client plugin,
+// covering connections, requests, retries, pool usage, and circuit breaker state.
 package grpc
 
 import (
@@ -299,15 +301,6 @@ func (m *ClientMetrics) RecordRequest(serviceName, method, status string, durati
 	if m.requestDuration != nil {
 		m.requestDuration.WithLabelValues(serviceName, method).Observe(duration.Seconds())
 	}
-}
-
-// RecordRequestWithMethod records a gRPC request with method information
-func (m *ClientMetrics) RecordRequestWithMethod(serviceName, method, status string, duration time.Duration) {
-	// Enhanced version that includes method information
-	m.RecordRequest(serviceName, method, status, duration)
-
-	// Could add method-specific metrics here if needed
-	// For example: method-specific counters or histograms
 }
 
 // RecordRequestWithDetails records a request with service and method details

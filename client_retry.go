@@ -38,8 +38,8 @@ func (r *RetryHandler) Initialize(maxRetries int, retryBackoff time.Duration) {
 	r.retryBackoff = retryBackoff
 }
 
-// ExecuteWithRetry executes a request with retry logic
-func (r *RetryHandler) ExecuteWithRetry(ctx context.Context, handler func(context.Context, interface{}) (interface{}, error), req interface{}) (interface{}, error) {
+// ExecuteWithRetry executes a request with retry logic.
+func (r *RetryHandler) ExecuteWithRetry(ctx context.Context, handler func(context.Context, any) (any, error), req any) (any, error) {
 	var lastErr error
 	backoff := r.retryBackoff
 

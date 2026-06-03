@@ -280,12 +280,12 @@ func (cb *CircuitBreaker) GetState() CircuitBreakerState {
 	return cb.state
 }
 
-// GetStats returns statistics about the circuit breaker
-func (cb *CircuitBreaker) GetStats() map[string]interface{} {
+// GetStats returns statistics about the circuit breaker.
+func (cb *CircuitBreaker) GetStats() map[string]any {
 	cb.mu.RLock()
 	defer cb.mu.RUnlock()
 
-	return map[string]interface{}{
+	return map[string]any{
 		"enabled":                 cb.config.Enabled,
 		"service_name":            cb.serviceName,
 		"state":                   cb.state.String(),
@@ -380,12 +380,12 @@ func (cbm *CircuitBreakerManager) RemoveCircuitBreaker(serviceName string) {
 	delete(cbm.breakers, serviceName)
 }
 
-// GetAllStats returns statistics for all circuit breakers
-func (cbm *CircuitBreakerManager) GetAllStats() map[string]interface{} {
+// GetAllStats returns statistics for all circuit breakers.
+func (cbm *CircuitBreakerManager) GetAllStats() map[string]any {
 	cbm.mu.RLock()
 	defer cbm.mu.RUnlock()
 
-	stats := make(map[string]interface{})
+	stats := make(map[string]any)
 	for serviceName, cb := range cbm.breakers {
 		stats[serviceName] = cb.GetStats()
 	}

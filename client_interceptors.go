@@ -41,7 +41,7 @@ func (m metadataCarrier) Keys() []string {
 // tracingUnaryClientInterceptor injects the current trace context into gRPC outgoing metadata
 // so that the server can continue the same trace. Uses the global TextMapPropagator (e.g. set by lynx-tracer).
 func tracingUnaryClientInterceptor() grpc.UnaryClientInterceptor {
-	return func(ctx context.Context, method string, req, reply interface{}, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+	return func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
 		prop := otel.GetTextMapPropagator()
 		if prop == nil {
 			return invoker(ctx, method, req, reply, cc, opts...)
@@ -60,7 +60,7 @@ func tracingUnaryClientInterceptor() grpc.UnaryClientInterceptor {
 
 // metricsUnaryClientInterceptor records per-method request count and duration.
 func (c *ClientPlugin) metricsUnaryClientInterceptor() grpc.UnaryClientInterceptor {
-	return func(ctx context.Context, method string, req, reply interface{}, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+	return func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
 		start := time.Now()
 		err := invoker(ctx, method, req, reply, cc, opts...)
 		duration := time.Since(start)
@@ -83,11 +83,11 @@ func (c *ClientPlugin) metricsUnaryClientInterceptor() grpc.UnaryClientIntercept
 // failures are counted and the circuit opens when the threshold is reached.
 func circuitBreakerUnaryClientInterceptor(cb *CircuitBreaker) grpc.UnaryClientInterceptor {
 	if cb == nil {
-		return func(ctx context.Context, method string, req, reply interface{}, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+		return func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
 			return invoker(ctx, method, req, reply, cc, opts...)
 		}
 	}
-	return func(ctx context.Context, method string, req, reply interface{}, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+	return func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
 		var rpcErr error
 		err := cb.Execute(ctx, func(ctx context.Context) error {
 			rpcErr = invoker(ctx, method, req, reply, cc, opts...)
@@ -102,7 +102,7 @@ func circuitBreakerUnaryClientInterceptor(cb *CircuitBreaker) grpc.UnaryClientIn
 
 // loggingUnaryClientInterceptor logs each RPC with method, duration, and trace id when available.
 func (c *ClientPlugin) loggingUnaryClientInterceptor() grpc.UnaryClientInterceptor {
-	return func(ctx context.Context, method string, req, reply interface{}, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+	return func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
 		start := time.Now()
 		err := invoker(ctx, method, req, reply, cc, opts...)
 		duration := time.Since(start)
@@ -143,7 +143,7 @@ func (c *ClientPlugin) retryUnaryClientInterceptor(config ClientConfig) grpc.Una
 	if baseDelay <= 0 {
 		baseDelay = time.Second
 	}
-	return func(ctx context.Context, method string, req, reply interface{}, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+	return func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
 		var lastErr error
 		for attempt := 0; attempt <= maxRetries; attempt++ {
 			lastErr = invoker(ctx, method, req, reply, cc, opts...)

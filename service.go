@@ -62,9 +62,9 @@ type Service struct {
 	rt plugins.Runtime
 	// Dependency injection providers
 	appNameProvider      func() string
-	loggerProvider       func() interface{}
-	certProvider         func() interface{}
-	controlPlaneProvider func() interface{}
+	loggerProvider       func() any
+	certProvider         func() any
+	controlPlaneProvider func() any
 	// Port availability check cache to avoid hammering local ports from health probes.
 	// Failures and successes are cached briefly.
 	portCheckCache struct {
@@ -153,12 +153,13 @@ func NewGrpcService() *Service {
 	}
 }
 
-// SetDependencies sets the dependency injection providers for the gRPC service
+// SetDependencies sets the dependency injection providers for the gRPC service.
+// All provider functions may be nil, in which case the plugin falls back to the global Lynx app instance.
 func (g *Service) SetDependencies(
 	appNameProvider func() string,
-	loggerProvider func() interface{},
-	certProvider func() interface{},
-	controlPlaneProvider func() interface{},
+	loggerProvider func() any,
+	certProvider func() any,
+	controlPlaneProvider func() any,
 ) {
 	g.appNameProvider = appNameProvider
 	g.loggerProvider = loggerProvider
@@ -258,7 +259,7 @@ func (g *Service) startupWithContext(ctx context.Context) error {
 	middlewares = append(middlewares,
 		validate.ProtoValidate(),
 		recovery.Recovery(
-			recovery.WithHandler(func(ctx context.Context, req, err interface{}) error {
+			recovery.WithHandler(func(ctx context.Context, req, err any) error {
 				log.Context(ctx).Error("panic recovery", "error", err)
 				g.recordServerError("panic_recovery")
 				return nil
@@ -866,24 +867,16 @@ func (g *Service) getAppName() string {
 	return "lynx" // fallback default
 }
 
-// getLogger returns the logger using dependency injection
-func (g *Service) getLogger() interface{} {
-	if g.loggerProvider != nil {
-		return g.loggerProvider()
-	}
-	return nil // fallback
-}
-
-// getCertProvider returns the certificate provider using dependency injection
-func (g *Service) getCertProvider() interface{} {
+// getCertProvider returns the certificate provider using dependency injection.
+func (g *Service) getCertProvider() any {
 	if g.certProvider != nil {
 		return g.certProvider()
 	}
 	return nil // fallback
 }
 
-// getControlPlane returns the control plane using dependency injection
-func (g *Service) getControlPlane() interface{} {
+// getControlPlane returns the control plane using dependency injection.
+func (g *Service) getControlPlane() any {
 	if g.controlPlaneProvider != nil {
 		if cp := g.controlPlaneProvider(); cp != nil {
 			return cp

@@ -1,3 +1,5 @@
+// This file implements the gRPC client plugin (ClientPlugin) for the Lynx framework,
+// including connection management, service discovery, TLS, retry, and health checking.
 package grpc
 
 import (
@@ -718,10 +720,12 @@ func (c *ClientPlugin) getDefaultMiddleware() []middleware.Middleware {
 	}
 }
 
-// getMetricsMiddleware returns metrics middleware for gRPC clients
+// getMetricsMiddleware returns metrics middleware for gRPC clients.
+// This is a Kratos-level middleware used for method-agnostic request tracking.
+// Fine-grained per-method metrics are recorded by metricsUnaryClientInterceptor.
 func (c *ClientPlugin) getMetricsMiddleware() middleware.Middleware {
 	return func(handler middleware.Handler) middleware.Handler {
-		return func(ctx context.Context, req interface{}) (interface{}, error) {
+		return func(ctx context.Context, req any) (any, error) {
 			start := time.Now()
 
 			resp, err := handler(ctx, req)
@@ -740,16 +744,15 @@ func (c *ClientPlugin) getMetricsMiddleware() middleware.Middleware {
 	}
 }
 
-// getRetryMiddleware returns retry middleware for gRPC clients
+// getRetryMiddleware returns a Kratos-level retry middleware for gRPC clients.
+// Retries happen with exponential backoff, respecting context cancellation.
 func (c *ClientPlugin) getRetryMiddleware() middleware.Middleware {
 	return func(handler middleware.Handler) middleware.Handler {
-		return func(ctx context.Context, req interface{}) (interface{}, error) {
-			// Get retry configuration from context or use defaults
+		return func(ctx context.Context, req any) (any, error) {
 			maxRetries := 3
 			baseDelay := 100 * time.Millisecond
 			maxDelay := 5 * time.Second
 
-			// Try to get retry config from client configuration
 			if c.conf != nil {
 				if c.conf.MaxRetries > 0 {
 					maxRetries = int(c.conf.MaxRetries)
@@ -761,32 +764,21 @@ func (c *ClientPlugin) getRetryMiddleware() middleware.Middleware {
 
 			var lastErr error
 			for attempt := 0; attempt <= maxRetries; attempt++ {
-				// First attempt or retry
 				resp, err := handler(ctx, req)
-
-				// If successful, return immediately
 				if err == nil {
-					if attempt > 0 {
-						// Record retry success metrics
-						if c.metrics != nil {
-							c.metrics.RecordRetry("unknown", "success", fmt.Sprintf("%d", attempt))
-						}
+					if attempt > 0 && c.metrics != nil {
+						c.metrics.RecordRetry("unknown", "success", fmt.Sprintf("%d", attempt))
 					}
 					return resp, nil
 				}
 
 				lastErr = err
-
-				// Check if error is retryable
 				if !c.isRetryableError(err) {
-					// Non-retryable error, return immediately
 					if c.metrics != nil {
 						c.metrics.RecordRetry("unknown", "non_retryable", fmt.Sprintf("%d", attempt))
 					}
 					return resp, err
 				}
-
-				// If this was the last attempt, don't wait
 				if attempt == maxRetries {
 					if c.metrics != nil {
 						c.metrics.RecordRetry("unknown", "max_attempts", fmt.Sprintf("%d", attempt))
@@ -794,10 +786,7 @@ func (c *ClientPlugin) getRetryMiddleware() middleware.Middleware {
 					break
 				}
 
-				// Calculate delay with exponential backoff
 				delay := c.calculateRetryDelay(attempt, baseDelay, maxDelay)
-
-				// Wait before retry, but respect context cancellation
 				retryTimer := time.NewTimer(delay)
 				select {
 				case <-ctx.Done():
@@ -807,11 +796,9 @@ func (c *ClientPlugin) getRetryMiddleware() middleware.Middleware {
 					}
 					return nil, ctx.Err()
 				case <-retryTimer.C:
-					// Continue to next retry
 				}
 			}
 
-			// All retries exhausted, return last error
 			return nil, lastErr
 		}
 	}
@@ -1146,9 +1133,8 @@ func (c *ClientPlugin) calculateRetryDelay(attempt int, baseDelay, maxDelay time
 	return delay
 }
 
-// getCertProvider gets the certificate provider from the application
-func (c *ClientPlugin) getCertProvider() interface{} {
-	// Get certificate provider from the Lynx application
+// getCertProvider gets the certificate provider from the application.
+func (c *ClientPlugin) getCertProvider() any {
 	if lynx.Lynx() == nil {
 		return nil
 	}
