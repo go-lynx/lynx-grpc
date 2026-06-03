@@ -507,7 +507,7 @@ func (g *Service) stopHealthPoller(ctx context.Context) error {
 }
 
 // Configure allows runtime configuration updates for the gRPC server.
-// It accepts an interface{} parameter that should contain the new configuration
+// It accepts an any parameter that should contain the new configuration
 // and updates the server settings accordingly.
 // Configure is concurrency-safe: the conf pointer swap is protected by confMu.
 func (g *Service) Configure(c any) error {
