@@ -35,25 +35,20 @@ const (
 	confPrefix = "lynx.grpc.service"
 )
 
-// Service represents the gRPC service plugin implementation.
-// It embeds the BasePlugin for common plugin functionality and maintains
-// the gRPC server instance along with its configuration.
+// Service is the Lynx gRPC server plugin: wraps a Kratos gRPC server with
+// lifecycle management, health reporting, metrics, and TLS.
 type Service struct {
-	// Embed Lynx framework's base plugin, inheriting common plugin functionality
 	*plugins.BasePlugin
-	// gRPC server instance
-	server *grpc.Server
-	// gRPC health server for readiness reporting
+	server      *grpc.Server
+	// healthServer reports readiness via the gRPC health protocol.
 	healthServer *health.Server
 	// cancel function for background health status poller
 	healthPollCancel context.CancelFunc
 	// wait for the health poller goroutine to exit before returning from cleanup
 	healthPollWG sync.WaitGroup
-	// gRPC service configuration information
 	conf *conf.Service
-	// runtime handle to query shared resources (e.g., required readiness)
-	rt plugins.Runtime
-	// Dependency injection providers
+	rt   plugins.Runtime
+	// Dependency injection providers; any nil provider falls back to the global Lynx app.
 	appNameProvider      func() string
 	loggerProvider       func() any
 	certProvider         func() any
@@ -204,9 +199,8 @@ func (g *Service) InitializeContext(ctx context.Context, plugin plugins.Plugin, 
 	return g.BasePlugin.Initialize(plugin, rt)
 }
 
-// StartupTasks implements the plugin startup interface.
-// It configures and starts the gRPC server with all necessary middleware and options,
-// including tracing, logging, rate limiting, validation, and recovery handlers.
+// StartupTasks builds and starts the gRPC server with middleware for tracing,
+// logging, rate limiting, validation, and panic recovery.
 func (g *Service) StartupTasks() error {
 	return g.startupWithContext(context.Background())
 }
@@ -385,9 +379,8 @@ func (g *Service) StartContext(ctx context.Context, _ plugins.Plugin) error {
 	return g.startupWithContext(ctx)
 }
 
-// CleanupTasks implements the plugin cleanup interface.
-// It gracefully stops the gRPC server and performs necessary cleanup operations.
-// Timeout is taken from server options (graceful_shutdown_timeout), default 30s.
+// CleanupTasks gracefully stops the gRPC server.
+// Timeout is read from graceful_shutdown_timeout config, defaulting to 30 s.
 func (g *Service) CleanupTasks() error {
 	timeout := 30 * time.Second
 	if g.serverOpts != nil {

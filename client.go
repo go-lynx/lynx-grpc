@@ -117,20 +117,17 @@ func NewGrpcClientPlugin() *ClientPlugin {
 	}
 }
 
-// InitializeResources initializes the gRPC client plugin
+// InitializeResources loads and validates the gRPC client configuration.
 func (c *ClientPlugin) InitializeResources(rt plugins.Runtime) error {
 	if err := c.BasePlugin.InitializeResources(rt); err != nil {
 		return err
 	}
-	// Store runtime for publishing readiness state
 	c.rt = rt
-	// Load configuration
 	err := rt.GetConfig().Value("lynx.grpc.client").Scan(c.conf)
 	if err != nil {
 		return err
 	}
 
-	// Set default configuration
 	if c.conf.DefaultTimeout == nil {
 		c.conf.DefaultTimeout = &durationpb.Duration{Seconds: 10}
 	}

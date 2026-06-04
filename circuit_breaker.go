@@ -94,7 +94,7 @@ func NewCircuitBreaker(serviceName string, config *CircuitBreakerConfig, metrics
 	}
 }
 
-// Execute executes a function with circuit breaker protection
+// Execute calls fn, blocking it when the circuit is OPEN and recording success/failure counts.
 func (cb *CircuitBreaker) Execute(ctx context.Context, fn func(context.Context) error) error {
 	if !cb.config.Enabled {
 		return fn(ctx)

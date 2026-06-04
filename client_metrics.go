@@ -293,7 +293,7 @@ func (m *ClientMetrics) RecordConnectionFailed(serviceName string) {
 	m.connectionsFailed.Inc()
 }
 
-// RecordRequest records a gRPC request with its duration and status
+// RecordRequest increments the request counter and records latency for the given service/method/status.
 func (m *ClientMetrics) RecordRequest(serviceName, method, status string, duration time.Duration) {
 	if m.requestsTotal != nil {
 		m.requestsTotal.WithLabelValues(serviceName, method, status).Inc()
@@ -303,13 +303,13 @@ func (m *ClientMetrics) RecordRequest(serviceName, method, status string, durati
 	}
 }
 
-// RecordRequestWithDetails records a request with service and method details
+// RecordRequestWithDetails is a variant of RecordRequest that accepts status as the last argument.
 func (m *ClientMetrics) RecordRequestWithDetails(serviceName, method string, duration time.Duration, status string) {
 	m.requestsTotal.WithLabelValues(serviceName, method, status).Inc()
 	m.requestDuration.WithLabelValues(serviceName, method).Observe(duration.Seconds())
 }
 
-// RecordRequestError records a request error
+// RecordRequestError increments the per-error-type counter for the given service/method.
 func (m *ClientMetrics) RecordRequestError(serviceName, method, errorType string) {
 	m.requestErrors.WithLabelValues(serviceName, method, errorType).Inc()
 }
