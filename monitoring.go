@@ -17,9 +17,7 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// Define monitoring metrics
 var (
-	// grpcServerUp indicates whether the gRPC server is running
 	grpcServerUp = promauto.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Namespace: "lynx",
@@ -30,7 +28,6 @@ var (
 		[]string{"server_name", "address"},
 	)
 
-	// grpcRequestsTotal records the total number of gRPC requests
 	grpcRequestsTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Namespace: "lynx",
@@ -41,7 +38,6 @@ var (
 		[]string{"method", "status"},
 	)
 
-	// grpcRequestDuration records the duration of gRPC requests
 	grpcRequestDuration = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Namespace: "lynx",
@@ -53,7 +49,6 @@ var (
 		[]string{"method"},
 	)
 
-	// grpcActiveConnections records the number of active connections
 	grpcActiveConnections = promauto.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Namespace: "lynx",
@@ -64,7 +59,6 @@ var (
 		[]string{"server_name"},
 	)
 
-	// grpcServerStartTime records the server start time
 	grpcServerStartTime = promauto.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Namespace: "lynx",
@@ -75,7 +69,6 @@ var (
 		[]string{"server_name"},
 	)
 
-	// grpcServerErrors records the number of server errors
 	grpcServerErrors = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Namespace: "lynx",
@@ -87,7 +80,6 @@ var (
 	)
 )
 
-// recordHealthCheckMetricsInternal records health check metrics (internal method)
 func (g *Service) recordHealthCheckMetricsInternal(healthy bool) {
 	if g.conf == nil {
 		return
@@ -100,23 +92,19 @@ func (g *Service) recordHealthCheckMetricsInternal(healthy bool) {
 	}
 }
 
-// recordRequestMetrics records request metrics
 func (g *Service) recordRequestMetrics(method string, duration time.Duration, status string) {
 	grpcRequestsTotal.WithLabelValues(method, status).Inc()
 	grpcRequestDuration.WithLabelValues(method).Observe(duration.Seconds())
 }
 
-// updateConnectionMetrics updates connection metrics
 func (g *Service) updateConnectionMetrics(active int) {
 	grpcActiveConnections.WithLabelValues(g.getAppName()).Set(float64(active))
 }
 
-// recordServerStartTime records server start time
 func (g *Service) recordServerStartTime() {
 	grpcServerStartTime.WithLabelValues(g.getAppName()).Set(float64(time.Now().Unix()))
 }
 
-// recordServerError records server errors
 func (g *Service) recordServerError(errorType string) {
 	grpcServerErrors.WithLabelValues(errorType).Inc()
 }

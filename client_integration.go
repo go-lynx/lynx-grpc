@@ -39,26 +39,19 @@ func (g *ClientIntegration) BuildGrpcSubscriptions(cfg *conf.Subscriptions) (map
 		return nil, fmt.Errorf("gRPC client plugin not initialized")
 	}
 
-	// Initialize the connection map to store gRPC connections
 	conns := make(map[string]*grpc.ClientConn)
 
-	// Return early if no gRPC subscriptions are configured
 	if cfg == nil || len(cfg.GetGrpc()) == 0 {
 		return conns, nil
 	}
 
-	// Iterate through each gRPC subscription configuration
 	for _, item := range cfg.GetGrpc() {
-		// Get the service name from configuration
 		name := item.GetService()
-
-		// Skip empty service names
 		if name == "" {
 			log.Warnf("skip empty grpc subscription entry")
 			continue
 		}
 
-		// Build client configuration
 		clientConfig := ClientConfig{
 			ServiceName: name,
 			Discovery:   g.discovery,
@@ -68,19 +61,14 @@ func (g *ClientIntegration) BuildGrpcSubscriptions(cfg *conf.Subscriptions) (map
 			Middleware:  g.clientPlugin.getDefaultMiddleware(),
 		}
 
-		// Add node router factory if provided
 		if g.routerFactory != nil {
 			clientConfig.NodeFilter = g.routerFactory(name)
 		}
 
-		// Configure TLS if enabled
 		if item.GetTls() {
 			clientConfig.TLS = true
-			// Note: TLS configuration would be handled by the client plugin
-			// based on the certificate management system
 		}
 
-		// Create connection using the client plugin
 		conn, err := g.clientPlugin.CreateConnection(clientConfig)
 		if err != nil {
 			if item.GetRequired() {
@@ -90,7 +78,6 @@ func (g *ClientIntegration) BuildGrpcSubscriptions(cfg *conf.Subscriptions) (map
 			continue
 		}
 
-		// Handle connection failure
 		if conn == nil {
 			if item.GetRequired() {
 				return nil, fmt.Errorf("required grpc subscription failed: %s", name)
@@ -99,11 +86,9 @@ func (g *ClientIntegration) BuildGrpcSubscriptions(cfg *conf.Subscriptions) (map
 			continue
 		}
 
-		// Warm-up: Simple connection state check (optional)
 		state := conn.GetState()
 		log.Infof("grpc subscription established: service=%s state=%s", name, state.String())
 
-		// Store the successful connection
 		conns[name] = conn
 	}
 

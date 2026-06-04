@@ -27,18 +27,11 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 )
 
-// Plugin metadata constants define the basic information about the gRPC plugin
 const (
-	// pluginName is the unique identifier for the gRPC service plugin
-	pluginName = "grpc.service"
-
-	// pluginVersion indicates the current version of the plugin
-	pluginVersion = "v1.6.1"
-
-	// pluginDescription provides a brief description of the plugin's functionality
+	pluginName        = "grpc.service"
+	pluginVersion     = "v1.6.1"
 	pluginDescription = "grpc service plugin for lynx framework"
-
-	// confPrefix is the configuration prefix used for loading gRPC service settings
+	// confPrefix is the config key prefix; both conf.Service and ServerOptions load from it.
 	confPrefix = "lynx.grpc.service"
 )
 
@@ -97,7 +90,6 @@ func (g *Service) healthStatusPoller(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			// Add timeout control to prevent blocking
 			updateCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
 			g.updateHealthServingStatusWithContext(updateCtx)
 			cancel()
@@ -118,27 +110,20 @@ func (g *Service) updateHealthServingStatusWithContext(ctx context.Context) {
 	}
 }
 
-// NewGrpcService creates and initializes a new instance of the gRPC service plugin.
-// It sets up the base plugin with the appropriate metadata and returns a pointer
-// to the Service structure.
+// NewGrpcService returns an unstarted gRPC service plugin; config is loaded later
+// in InitializeResources.
 func NewGrpcService() *Service {
 	return &Service{
 		BasePlugin: plugins.NewBasePlugin(
-			// Generate unique plugin ID
 			plugins.GeneratePluginID("", pluginName, pluginVersion),
-			// Plugin name
 			pluginName,
-			// Plugin description
 			pluginDescription,
-			// Plugin version
 			pluginVersion,
-			// Configuration prefix
 			confPrefix,
-			// Weight
 			10,
 		),
-		// Initialize port check cache to avoid frequent retries on failures
-		// Success checks are never cached to ensure real-time failure detection
+		// Cache windows for port health checks: brief so failures clear fast,
+		// long enough to avoid hammering the listener on every probe.
 		portCheckCache: struct {
 			mu            sync.RWMutex
 			lastFailure   time.Time
@@ -167,39 +152,29 @@ func (g *Service) SetDependencies(
 	g.controlPlaneProvider = controlPlaneProvider
 }
 
-// InitializeResources implements the plugin initialization interface.
-// It loads and validates the gRPC server configuration from the runtime environment.
-// If no configuration is provided, it sets up default values for the server.
+// InitializeResources loads, defaults, and validates the gRPC server config and
+// server options from the runtime; it does not start the server (see StartupTasks).
 func (g *Service) InitializeResources(rt plugins.Runtime) error {
 	if err := g.BasePlugin.InitializeResources(rt); err != nil {
 		return err
 	}
-	// store runtime for later use (e.g., readiness resource lookups)
 	g.rt = rt
-	// Initialize an empty configuration structure
 	g.conf = &conf.Service{}
 
-	// Scan and load gRPC configuration from runtime configuration
 	err := rt.GetConfig().Value(confPrefix).Scan(g.conf)
 	if err != nil {
 		return err
 	}
 
-	// Set default configuration
+	// Defaults applied to any unset field below: TCP on :9090, TLS off, 10s timeout.
 	defaultConf := &conf.Service{
-		// Default network protocol is TCP
-		Network: "tcp",
-		// Default listening address is :9090
-		Addr: ":9090",
-		// TLS is disabled by default
-		TlsEnable: false,
-		// No client authentication by default
+		Network:     "tcp",
+		Addr:        ":9090",
+		TlsEnable:   false,
 		TlsAuthType: 0,
-		// Default timeout is 10 seconds
-		Timeout: &durationpb.Duration{Seconds: 10},
+		Timeout:     &durationpb.Duration{Seconds: 10},
 	}
 
-	// Use default values for unset fields
 	if g.conf.Network == "" {
 		g.conf.Network = defaultConf.Network
 	}
@@ -209,15 +184,12 @@ func (g *Service) InitializeResources(rt plugins.Runtime) error {
 	if g.conf.Timeout == nil {
 		g.conf.Timeout = defaultConf.Timeout
 	}
-	// MaxConcurrentStreams defaults to 0 (unlimited) if not set
-	// This is already the default value, so no need to set it explicitly
 
-	// Validate configuration
 	if err := g.validateConfig(); err != nil {
 		return fmt.Errorf("invalid gRPC configuration: %v", err)
 	}
 
-	// Load optional server options from the same config prefix (graceful_shutdown_timeout, enable_*, rate_limit, max_inflight_unary).
+	// Server options share the config prefix so YAML can set them without proto changes.
 	opts := defaultServerOptions()
 	_ = rt.GetConfig().Value(confPrefix).Scan(&opts)
 	g.serverOpts = buildServerOptionsFromConfig(g.conf, opts)
@@ -240,7 +212,6 @@ func (g *Service) StartupTasks() error {
 }
 
 func (g *Service) startupWithContext(ctx context.Context) error {
-	// Log gRPC service startup
 	log.Info("starting grpc service")
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("context canceled before gRPC service startup: %w", err)
@@ -284,24 +255,19 @@ func (g *Service) startupWithContext(ctx context.Context) error {
 		grpc.CustomHealth(),
 	}
 
-	// Configure server options based on configuration
 	if g.conf.Network != "" {
-		// Set network protocol
 		opts = append(opts, grpc.Network(g.conf.Network))
 	}
 	if g.conf.Addr != "" {
-		// Set listening address
 		opts = append(opts, grpc.Address(g.conf.Addr))
 	}
 	if g.conf.Timeout != nil {
-		// Set timeout
 		opts = append(opts, grpc.Timeout(g.conf.Timeout.AsDuration()))
 	}
 	if g.conf.GetTlsEnable() {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("gRPC service startup canceled before TLS initialization: %w", err)
 		}
-		// If TLS is enabled, add TLS configuration options
 		tlsOption, err := g.tlsLoad()
 		if err != nil {
 			return fmt.Errorf("failed to load TLS configuration: %v", err)
@@ -309,15 +275,13 @@ func (g *Service) startupWithContext(ctx context.Context) error {
 		opts = append(opts, tlsOption)
 	}
 
-	// Configure MaxConcurrentStreams if specified
-	// This is an important parameter for controlling server resource usage
+	// Cap concurrent streams per connection to bound server resource use. Unlike raw
+	// gRPC (where 0 = unlimited), an unset value here gets a safe 1000 default.
 	maxStreams := g.conf.GetMaxConcurrentStreams()
 	if maxStreams > 0 {
 		log.Infof("Setting gRPC MaxConcurrentStreams to %d", maxStreams)
-		// Use underlying gRPC option to set MaxConcurrentStreams
 		opts = append(opts, grpc.Options(grpcgo.MaxConcurrentStreams(uint32(maxStreams))))
 	} else {
-		// Default to 1000 for production safety (can be overridden by setting to 0 explicitly)
 		const defaultMaxStreams = uint32(1000)
 		log.Infof("MaxConcurrentStreams not configured, using safe default: %d", defaultMaxStreams)
 		opts = append(opts, grpc.Options(grpcgo.MaxConcurrentStreams(defaultMaxStreams)))
@@ -346,21 +310,18 @@ func (g *Service) startupWithContext(ctx context.Context) error {
 		opts = append(opts, grpc.Options(grpcgo.MaxSendMsgSize(defaultMaxMsgSize)))
 	}
 
-	// Create gRPC server instance
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("gRPC service startup canceled before server creation: %w", err)
 	}
 	g.publishRuntimeContract(false, false)
 	g.server = grpc.NewServer(opts...)
 
-	// Register custom health server and set initial serving status from required readiness
+	// Serve the standard gRPC health service; initial status reflects required-upstream readiness.
 	g.healthServer = health.NewServer()
-	// Register health on the underlying google gRPC server
 	grpc_health_v1.RegisterHealthServer(g.server.Server, g.healthServer)
-	// Apply initial serving status based on required upstream readiness
 	g.updateHealthServingStatus()
 
-	// Track resources that need cleanup on failure
+	// cleanup runs on any early return below; cleared to nil on success.
 	var cleanup func()
 	defer func() {
 		if cleanup != nil {
@@ -385,7 +346,6 @@ func (g *Service) startupWithContext(ctx context.Context) error {
 		g.healthPollWG.Wait()
 	}
 
-	// Record server start time for metrics
 	g.recordServerStartTime()
 
 	if g.rt != nil {
@@ -414,11 +374,9 @@ func (g *Service) startupWithContext(ctx context.Context) error {
 		}
 	}
 
-	// Success - clear cleanup function
 	cleanup = nil
 	g.publishRuntimeContract(true, true)
 
-	// Log successful gRPC service startup
 	log.Info("grpc service successfully started")
 	return nil
 }
@@ -563,25 +521,22 @@ func (g *Service) CheckHealth() error {
 	g.confMu.RLock()
 	defer g.confMu.RUnlock()
 
-	// Check server configuration
 	if g.conf == nil || g.conf.Addr == "" {
 		return fmt.Errorf("gRPC server address not configured")
 	}
 
-	// Runtime health checks should fail when the listening port is unavailable.
+	// A live server must be accepting connections; an unreachable port is unhealthy.
 	if err := g.checkPortAvailability(); err != nil {
 		g.recordHealthCheckMetricsInternal(false)
 		return fmt.Errorf("gRPC server is not listening on %s: %w", g.conf.Addr, err)
 	}
 
-	// Check TLS configuration if enabled
 	if g.conf.GetTlsEnable() {
 		if err := g.validateTLSConfig(); err != nil {
 			return fmt.Errorf("TLS configuration invalid: %v", err)
 		}
 	}
 
-	// Record health check metrics
 	g.recordHealthCheckMetricsInternal(true)
 
 	return nil
@@ -594,7 +549,7 @@ func (g *Service) checkPortAvailability() error {
 		return fmt.Errorf("server address not configured")
 	}
 
-	// Parse address and normalize host for dial
+	// Normalize a bind address (e.g. ":9090") to a dialable one (127.0.0.1:9090).
 	addr := g.conf.Addr
 	if !strings.Contains(addr, ":") {
 		addr = ":" + addr
@@ -608,12 +563,11 @@ func (g *Service) checkPortAvailability() error {
 	}
 	norm := net.JoinHostPort(host, port)
 
-	// Only check TCP network here
+	// A TCP dial probe only makes sense for TCP; skip for unix sockets etc.
 	if g.conf.Network != "" && g.conf.Network != "tcp" {
 		return nil
 	}
 
-	// Check if we recently checked this port and should skip retry to avoid hammering.
 	g.portCheckCache.mu.RLock()
 	lastFailure := g.portCheckCache.lastFailure
 	lastSuccess := g.portCheckCache.lastSuccess
@@ -710,7 +664,6 @@ func (g *Service) updateHealthServingStatus() {
 		log.Debugf("Runtime is nil, defaulting to SERVING status")
 	}
 
-	// Set the serving status
 	g.healthServer.SetServingStatus("", status)
 }
 
@@ -772,44 +725,35 @@ func (g *Service) validateConfig() error {
 		return fmt.Errorf("configuration is nil")
 	}
 
-	// Validate network type
 	if g.conf.Network != "" && g.conf.Network != "tcp" && g.conf.Network != "unix" {
 		return fmt.Errorf("unsupported network type: %s, supported types are 'tcp' and 'unix'", g.conf.Network)
 	}
 
-	// Validate address format
 	if err := g.validateAddress(g.conf.Addr); err != nil {
 		return fmt.Errorf("invalid address format: %v", err)
 	}
 
-	// Validate TLS configuration
 	if g.conf.GetTlsEnable() {
 		if err := g.validateTLSConfig(); err != nil {
 			return fmt.Errorf("invalid TLS configuration: %v", err)
 		}
 	}
 
-	// Validate timeout configuration
 	if g.conf.Timeout != nil && g.conf.Timeout.AsDuration() <= 0 {
 		return fmt.Errorf("timeout must be positive, got: %v", g.conf.Timeout.AsDuration())
 	}
 
-	// Validate MaxConcurrentStreams configuration
-	// MaxConcurrentStreams of 0 means unlimited, which is valid
-	// But if set, it should be within reasonable bounds
+	// 0 means unlimited (valid); only warn on bounds that likely signal misconfiguration.
 	if maxStreams := g.conf.GetMaxConcurrentStreams(); maxStreams > 0 {
-		// Warn if value is very large (may indicate misconfiguration)
 		if maxStreams > 100000 {
 			log.Warnf("MaxConcurrentStreams is very large (%d), this may consume excessive server resources", maxStreams)
 		}
-		// Warn if value is very small (may limit performance unnecessarily)
 		if maxStreams < 10 {
 			log.Warnf("MaxConcurrentStreams is very small (%d), this may unnecessarily limit concurrent requests", maxStreams)
 		}
 	}
 
-	// Validate message size configurations
-	const maxAllowedMsgSize = 200 * 1024 * 1024 // 200MB upper bound warning
+	const maxAllowedMsgSize = 200 * 1024 * 1024 // 200MB; above this, warn about memory use.
 	if recv := g.conf.GetMaxRecvMsgSize(); recv > 0 {
 		if recv > maxAllowedMsgSize {
 			log.Warnf("MaxRecvMsgSize is very large (%d bytes), this may consume excessive memory", recv)
@@ -830,26 +774,23 @@ func (g *Service) validateAddress(addr string) error {
 		return fmt.Errorf("address cannot be empty")
 	}
 
-	// For TCP network, validate port format
+	// TCP addresses must carry a port; an empty host means "all interfaces".
 	if g.conf.Network == "tcp" || g.conf.Network == "" {
 		if !strings.Contains(addr, ":") {
 			return fmt.Errorf("TCP address must include port (e.g., ':9090' or 'localhost:9090')")
 		}
 
-		// Try to parse the address
 		host, port, err := net.SplitHostPort(addr)
 		if err != nil {
 			return fmt.Errorf("invalid address format: %v", err)
 		}
 
-		// Validate port number
 		if port == "" {
 			return fmt.Errorf("port cannot be empty")
 		}
 
-		// For host validation, allow empty host (means all interfaces)
+		// A non-resolving host is only a warning, not a hard failure (DNS may not be ready yet).
 		if host != "" {
-			// Try to resolve the hostname
 			if _, err := net.LookupHost(host); err != nil {
 				log.Warn("Warning: could not resolve hostname", "host", host, "error", err)
 			}

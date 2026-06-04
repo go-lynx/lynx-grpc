@@ -9,7 +9,9 @@ import (
 	"github.com/go-kratos/kratos/v2/selector"
 )
 
-// Version creates a node filter that filters nodes by version
+// Version keeps nodes whose "version" metadata matches version. Nodes lacking the
+// metadata are kept (fail-open), and if the filter would leave nothing it returns
+// all nodes so the service stays reachable.
 func Version(version string) selector.NodeFilter {
 	return func(ctx context.Context, nodes []selector.Node) []selector.Node {
 		if version == "" {
@@ -18,19 +20,16 @@ func Version(version string) selector.NodeFilter {
 
 		var filteredNodes []selector.Node
 		for _, node := range nodes {
-			// Try to get version from node metadata
 			if nodeVersion, exists := node.Metadata()["version"]; exists {
 				if nodeVersion == version {
 					filteredNodes = append(filteredNodes, node)
 				}
 			} else {
-				// Fallback: include node if we can't determine version
 				filteredNodes = append(filteredNodes, node)
 			}
 		}
 
 		if len(filteredNodes) == 0 {
-			// If no nodes match the version filter, return all nodes to avoid service unavailability
 			return nodes
 		}
 
@@ -38,7 +37,7 @@ func Version(version string) selector.NodeFilter {
 	}
 }
 
-// Group creates a node filter that filters nodes by group
+// Group keeps nodes whose "group" metadata matches group; fail-open like Version.
 func Group(group string) selector.NodeFilter {
 	return func(ctx context.Context, nodes []selector.Node) []selector.Node {
 		if group == "" {
@@ -47,19 +46,16 @@ func Group(group string) selector.NodeFilter {
 
 		var filteredNodes []selector.Node
 		for _, node := range nodes {
-			// Try to get group from node metadata
 			if nodeGroup, exists := node.Metadata()["group"]; exists {
 				if nodeGroup == group {
 					filteredNodes = append(filteredNodes, node)
 				}
 			} else {
-				// Fallback: include node if we can't determine group
 				filteredNodes = append(filteredNodes, node)
 			}
 		}
 
 		if len(filteredNodes) == 0 {
-			// If no nodes match the group filter, return all nodes to avoid service unavailability
 			return nodes
 		}
 
@@ -67,24 +63,22 @@ func Group(group string) selector.NodeFilter {
 	}
 }
 
-// Healthy creates a node filter that filters out unhealthy nodes
+// Healthy drops nodes whose "health" metadata is not "healthy"/"up". Nodes without
+// the metadata are assumed healthy; if all are filtered out, all are returned (fail-open).
 func Healthy() selector.NodeFilter {
 	return func(ctx context.Context, nodes []selector.Node) []selector.Node {
 		var healthyNodes []selector.Node
 		for _, node := range nodes {
-			// Try to get health status from node metadata
 			if healthStatus, exists := node.Metadata()["health"]; exists {
 				if healthStatus == "healthy" || healthStatus == "up" {
 					healthyNodes = append(healthyNodes, node)
 				}
 			} else {
-				// If no health metadata, assume healthy
 				healthyNodes = append(healthyNodes, node)
 			}
 		}
 
 		if len(healthyNodes) == 0 {
-			// If no healthy nodes, return all nodes to avoid service unavailability
 			return nodes
 		}
 
@@ -92,7 +86,7 @@ func Healthy() selector.NodeFilter {
 	}
 }
 
-// Region creates a node filter that filters nodes by region
+// Region keeps nodes whose "region" metadata matches region; fail-open like Version.
 func Region(region string) selector.NodeFilter {
 	return func(ctx context.Context, nodes []selector.Node) []selector.Node {
 		if region == "" {
@@ -101,19 +95,16 @@ func Region(region string) selector.NodeFilter {
 
 		var filteredNodes []selector.Node
 		for _, node := range nodes {
-			// Try to get region from node metadata
 			if nodeRegion, exists := node.Metadata()["region"]; exists {
 				if nodeRegion == region {
 					filteredNodes = append(filteredNodes, node)
 				}
 			} else {
-				// Fallback: include node if we can't determine region
 				filteredNodes = append(filteredNodes, node)
 			}
 		}
 
 		if len(filteredNodes) == 0 {
-			// If no nodes match the region filter, return all nodes to avoid service unavailability
 			return nodes
 		}
 

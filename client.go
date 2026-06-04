@@ -98,14 +98,12 @@ type ClientConfig struct {
 func NewGrpcClientPlugin() *ClientPlugin {
 	metrics := NewClientMetrics()
 
-	// Initialize connection pool with default settings
-	// maxServices: 10, maxConnsPerService: 5, idleTimeout: 5min, enabled: false
+	// Pool starts disabled; InitializeResources rebuilds it from config if pooling is on.
 	connectionPool := NewConnectionPool(10, 5, 5*time.Minute, false, metrics)
 
-	// Initialize load balancer (will be configured per service)
+	// Discovery is nil here and set per service later via SetDiscovery.
 	loadBalancer := NewLoadBalancer(nil, metrics)
 
-	// Initialize circuit breaker manager
 	circuitBreakers := NewCircuitBreakerManager(metrics)
 
 	return &ClientPlugin{
@@ -149,23 +147,22 @@ func (c *ClientPlugin) InitializeResources(rt plugins.Runtime) error {
 		c.conf.MaxConnections = 10
 	}
 
-	// Initialize connection pool with actual config
+	// Rebuild the pool from real config (the constructor created a disabled placeholder).
+	// pool_size caps distinct services; max_connections caps connections per service.
 	poolEnabled := c.conf.GetConnectionPooling()
 	if poolEnabled {
-		maxServices := int(c.conf.GetPoolSize())         // Total number of services
-		maxConnsPerService := int(c.conf.MaxConnections) // Connections per service
+		maxServices := int(c.conf.GetPoolSize())
+		maxConnsPerService := int(c.conf.MaxConnections)
 		idleTimeout := c.conf.GetIdleTimeout().AsDuration()
 		if maxServices <= 0 {
 			maxServices = 10
 		}
 		if maxConnsPerService <= 0 {
-			maxConnsPerService = 5 // Default: 5 connections per service
+			maxConnsPerService = 5
 		}
 		if idleTimeout <= 0 {
 			idleTimeout = 5 * time.Minute
 		}
-		// Recreate connection pool with actual config
-		// Now supports multiple connections per service (channel pool)
 		c.connectionPool = NewConnectionPool(maxServices, maxConnsPerService, idleTimeout, poolEnabled, c.metrics)
 	}
 
@@ -353,31 +350,26 @@ func (c *ClientPlugin) CloseContext(ctx context.Context) error {
 
 	var lastErr error
 
-	// Close connection pool
 	if c.connectionPool != nil {
 		if err := c.connectionPool.CloseAll(); err != nil {
 			lastErr = err
 		}
 	}
 
-	// Close load balancer
 	if c.loadBalancer != nil {
 		if err := c.loadBalancer.Close(); err != nil {
 			lastErr = err
 		}
 	}
 
-	// Close circuit breakers
 	if c.circuitBreakers != nil {
 		c.circuitBreakers.Close()
 	}
 
-	// Close TLS manager
 	if c.tlsManager != nil {
 		c.tlsManager.Close()
 	}
 
-	// Close legacy connections
 	for serviceName, conn := range c.connections {
 		if err := conn.Close(); err != nil {
 			lastErr = err
@@ -476,12 +468,11 @@ func (c *ClientPlugin) CreateConnection(config ClientConfig) (*grpc.ClientConn, 
 		return nil, fmt.Errorf("failed to get connection for service %s: %w", config.ServiceName, err)
 	}
 
-	// Store connection in legacy map for backward compatibility
+	// Mirror into the legacy connections map so older GetConnection callers still find it.
 	c.mu.Lock()
 	c.connections[config.ServiceName] = conn
 	c.mu.Unlock()
 
-	// Record metrics
 	if c.metrics != nil {
 		c.metrics.RecordConnectionCreated(config.ServiceName)
 	}
@@ -562,13 +553,14 @@ func (c *ClientPlugin) buildConnection(config ClientConfig) (*grpc.ClientConn, e
 }
 
 func (c *ClientPlugin) buildConnectionWithContext(ctx context.Context, config ClientConfig) (*grpc.ClientConn, error) {
-	// Build client options
 	var opts []grpc.DialOption
 
-	// Set endpoint based on configuration: LoadBalancer path (select one node) or discovery/static
+	// Pick the dial target: explicit LB picks one node, plain discovery dials all
+	// instances (gRPC round_robin), otherwise a static endpoint.
 	var target string
 	if config.Discovery != nil && config.LoadBalancer != "" {
-		// Use LoadBalancer to select one node and dial it (connection-level load balancing)
+		// LB picks a single node, so each connection targets one address; the pool
+		// holds several connections that may point at different nodes.
 		lbCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 		node, _, err := c.loadBalancer.SelectNode(lbCtx, config.ServiceName)
@@ -579,13 +571,10 @@ func (c *ClientPlugin) buildConnectionWithContext(ctx context.Context, config Cl
 		if target == "" {
 			return nil, fmt.Errorf("empty address from node for service %s", config.ServiceName)
 		}
-		// Single address per connection; pool may have multiple connections to different nodes
 	} else if config.Discovery != nil {
-		// Use service discovery (resolver returns all instances, gRPC round_robin)
 		opts = append(opts, grpc.WithDefaultServiceConfig(`{"loadBalancingPolicy":"round_robin"}`))
 		target = fmt.Sprintf("discovery:///%s", config.ServiceName)
 	} else if config.Endpoint != "" {
-		// Use static endpoint
 		opts = append(opts, grpc.WithDefaultServiceConfig(`{"loadBalancingPolicy":"round_robin"}`))
 		target = config.Endpoint
 	} else {
@@ -606,7 +595,6 @@ func (c *ClientPlugin) buildConnectionWithContext(ctx context.Context, config Cl
 		// Node filter is applied via discovery/selector when using service discovery; no gRPC-level option.
 	}
 
-	// Add TLS configuration if enabled
 	if config.TLS {
 		tlsConfig, err := c.buildTLSConfig(config)
 		if err != nil {
@@ -617,7 +605,6 @@ func (c *ClientPlugin) buildConnectionWithContext(ctx context.Context, config Cl
 		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	}
 
-	// Add keep-alive configuration
 	if config.KeepAlive > 0 {
 		opts = append(opts, grpc.WithKeepaliveParams(keepalive.ClientParameters{
 			Time:                config.KeepAlive,
@@ -626,13 +613,14 @@ func (c *ClientPlugin) buildConnectionWithContext(ctx context.Context, config Cl
 		}))
 	}
 
-	// Create connection using NewClient (DialContext is deprecated in newer gRPC)
+	// NewClient (not the deprecated DialContext) defers connecting until first use.
 	conn, err := grpc.NewClient(target, opts...)
 	if err != nil {
 		return nil, err
 	}
 
-	// If the service is required, block until the connection is Ready or timeout
+	// Required services must be reachable at startup: force-connect and block until
+	// Ready (or timeout) so a dead upstream fails startup instead of surfacing later.
 	if config.Required {
 		waitTimeout := config.Timeout
 		if waitTimeout <= 0 {
@@ -640,7 +628,6 @@ func (c *ClientPlugin) buildConnectionWithContext(ctx context.Context, config Cl
 		}
 		waitCtx, cancel := context.WithTimeout(ctx, waitTimeout)
 		defer cancel()
-		// Start connecting and wait for Ready
 		conn.Connect()
 		for {
 			state := conn.GetState()
@@ -659,20 +646,17 @@ func (c *ClientPlugin) buildConnectionWithContext(ctx context.Context, config Cl
 
 // buildTLSConfig builds TLS configuration for the client
 func (c *ClientPlugin) buildTLSConfig(config ClientConfig) (credentials.TransportCredentials, error) {
-	// Get certificate provider from the application
 	certProvider := c.getCertProvider()
 	if certProvider == nil {
 		return nil, fmt.Errorf("certificate provider not configured")
 	}
 
-	// Create TLS manager if not exists (concurrency-safe)
 	c.mu.Lock()
 	if c.tlsManager == nil {
 		c.tlsManager = NewTLSManager()
 	}
 	c.mu.Unlock()
 
-	// Build TLS configuration based on auth type
 	tlsConfig := &TLSConfig{
 		Enabled:                  true,
 		InsecureSkipVerify:       false,
@@ -695,13 +679,11 @@ func (c *ClientPlugin) buildTLSConfig(config ClientConfig) (credentials.Transpor
 		}
 	}
 
-	// Set service-specific TLS configuration
 	err := c.tlsManager.SetServiceConfig(config.ServiceName, tlsConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to set TLS config for service %s: %w", config.ServiceName, err)
 	}
 
-	// Get credentials from TLS manager
 	credList, err := c.tlsManager.GetCredentials(config.ServiceName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get TLS credentials for service %s: %w", config.ServiceName, err)
@@ -735,8 +717,6 @@ func (c *ClientPlugin) getMetricsMiddleware() middleware.Middleware {
 			if err != nil {
 				s = "error"
 			}
-
-			// Record metrics
 			c.metrics.RecordRequest("unknown", "unknown", s, duration)
 
 			return resp, err
@@ -1073,13 +1053,16 @@ func (c *ClientPlugin) checkRequiredService(ctx context.Context, svc *conf.Subsc
 	return nil
 }
 
-// isRetryableError determines if an error is retryable
+// isRetryableError reports whether the interceptor should retry err. Only
+// transient/server-side codes are retried; client-fault codes cannot succeed on
+// retry and are returned immediately. This path is conservative: anything not a
+// known-retryable gRPC code (including context cancellation/deadline and non-gRPC
+// errors) is treated as non-retryable, unlike RetryHandler.isRetryableError.
 func (c *ClientPlugin) isRetryableError(err error) bool {
 	if err == nil {
 		return false
 	}
 
-	// Check for gRPC status codes
 	if st, ok := status.FromError(err); ok {
 		switch st.Code() {
 		case codes.Unavailable,
@@ -1102,30 +1085,25 @@ func (c *ClientPlugin) isRetryableError(err error) bool {
 		}
 	}
 
-	// Check for context errors
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-		return false // Don't retry context errors
+		return false
 	}
 
-	// Default to not retryable for unknown errors
 	return false
 }
 
-// calculateRetryDelay calculates the delay for the next retry attempt using exponential backoff with jitter
+// calculateRetryDelay returns baseDelay*2^attempt capped at maxDelay, then adds
+// ±25% jitter so retrying clients don't synchronize into a thundering herd.
+// A negative result (possible at the jitter floor) falls back to baseDelay.
 func (c *ClientPlugin) calculateRetryDelay(attempt int, baseDelay, maxDelay time.Duration) time.Duration {
-	// Exponential backoff: baseDelay * 2^attempt
 	delay := time.Duration(float64(baseDelay) * math.Pow(2, float64(attempt)))
-
-	// Cap at maxDelay
 	if delay > maxDelay {
 		delay = maxDelay
 	}
 
-	// Add jitter to avoid thundering herd (±25% random variation)
 	jitter := time.Duration(float64(delay) * 0.25 * (rand.Float64()*2 - 1))
 	delay += jitter
 
-	// Ensure delay is not negative
 	if delay < 0 {
 		delay = baseDelay
 	}

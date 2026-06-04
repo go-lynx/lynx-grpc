@@ -75,28 +75,16 @@ func (cv *ConfigValidator) ValidateClientConfig(config *conf.GrpcClient) *Valida
 		return result
 	}
 
-	// Validate default timeouts
 	cv.validateTimeouts(config, result)
-
-	// Validate connection pooling
 	cv.validateConnectionPooling(config, result)
-
-	// Validate retry configuration
 	cv.validateRetryConfig(config, result)
-
-	// Validate subscribe services
 	cv.validateSubscribeServices(config, result)
-
-	// Validate legacy services (if any)
 	cv.validateLegacyServices(config, result)
-
-	// Validate TLS configuration
 	cv.validateTLSConfig(config, result)
 
 	return result
 }
 
-// validateTimeouts validates timeout configurations
 func (cv *ConfigValidator) validateTimeouts(config *conf.GrpcClient, result *ValidationResult) {
 	if config.DefaultTimeout != nil {
 		timeout := config.DefaultTimeout.AsDuration()
@@ -117,7 +105,6 @@ func (cv *ConfigValidator) validateTimeouts(config *conf.GrpcClient, result *Val
 	}
 }
 
-// validateConnectionPooling validates connection pooling configuration
 func (cv *ConfigValidator) validateConnectionPooling(config *conf.GrpcClient, result *ValidationResult) {
 	poolEnabled := config.GetConnectionPooling()
 	if !poolEnabled {
@@ -141,7 +128,6 @@ func (cv *ConfigValidator) validateConnectionPooling(config *conf.GrpcClient, re
 	}
 }
 
-// validateRetryConfig validates retry configuration
 func (cv *ConfigValidator) validateRetryConfig(config *conf.GrpcClient, result *ValidationResult) {
 	if config.MaxRetries < 0 {
 		result.AddError("max_retries", config.MaxRetries, "max retries cannot be negative")
@@ -159,7 +145,6 @@ func (cv *ConfigValidator) validateRetryConfig(config *conf.GrpcClient, result *
 	}
 }
 
-// validateSubscribeServices validates subscribe services configuration
 func (cv *ConfigValidator) validateSubscribeServices(config *conf.GrpcClient, result *ValidationResult) {
 	subscribeServices := config.GetSubscribeServices()
 	if subscribeServices == nil {
@@ -170,36 +155,29 @@ func (cv *ConfigValidator) validateSubscribeServices(config *conf.GrpcClient, re
 
 	for i, serviceConfig := range subscribeServices {
 		serviceName := serviceConfig.GetName()
-		// Check for duplicate service names
 		if serviceNames[serviceName] {
 			result.AddError(fmt.Sprintf("subscribe_services[%d]", i), serviceName, "duplicate service name")
 			continue
 		}
 		serviceNames[serviceName] = true
 
-		// Validate service name
 		if err := cv.validateServiceName(serviceName); err != nil {
 			result.AddError(fmt.Sprintf("subscribe_services[%d].name", i), serviceName, err.Error())
 		}
 
-		// Validate endpoint (if provided)
 		if serviceConfig.GetEndpoint() != "" {
 			if err := cv.validateEndpoint(serviceConfig.GetEndpoint()); err != nil {
 				result.AddError("subscribe_services."+serviceName+".endpoint", serviceConfig.GetEndpoint(), err.Error())
 			}
 		}
 
-		// Validate load balancer strategy
 		if serviceConfig.GetLoadBalancer() != "" {
 			if err := cv.validateLoadBalancerStrategy(serviceConfig.GetLoadBalancer()); err != nil {
 				result.AddError("subscribe_services."+serviceName+".load_balancer", serviceConfig.GetLoadBalancer(), err.Error())
 			}
 		}
 
-		// Validate circuit breaker configuration
 		cv.validateCircuitBreakerConfig(serviceName, serviceConfig, result)
-
-		// Validate metadata
 		cv.validateMetadata(serviceName, serviceConfig.GetMetadata(), result)
 	}
 }
@@ -230,7 +208,6 @@ func (cv *ConfigValidator) validateLegacyServices(config *conf.GrpcClient, resul
 	}
 }
 
-// validateTLSConfig validates TLS configuration
 func (cv *ConfigValidator) validateTLSConfig(config *conf.GrpcClient, result *ValidationResult) {
 	if !config.GetTlsEnable() {
 		return
@@ -246,7 +223,6 @@ func (cv *ConfigValidator) validateTLSConfig(config *conf.GrpcClient, result *Va
 	// For example, certificate file validation, cipher suite validation, etc.
 }
 
-// validateServiceName validates a service name
 func (cv *ConfigValidator) validateServiceName(serviceName string) error {
 	if serviceName == "" {
 		return fmt.Errorf("service name cannot be empty")
@@ -312,7 +288,6 @@ func (cv *ConfigValidator) validateEndpoint(endpoint string) error {
 	return nil
 }
 
-// validateLoadBalancerStrategy validates load balancer strategy
 func (cv *ConfigValidator) validateLoadBalancerStrategy(strategy string) error {
 	validStrategies := map[string]bool{
 		"round_robin":          true,
@@ -329,7 +304,6 @@ func (cv *ConfigValidator) validateLoadBalancerStrategy(strategy string) error {
 	return nil
 }
 
-// validateCircuitBreakerConfig validates circuit breaker configuration
 func (cv *ConfigValidator) validateCircuitBreakerConfig(serviceName string, serviceConfig *conf.SubscribeService, result *ValidationResult) {
 	if !serviceConfig.GetCircuitBreakerEnabled() {
 		return
@@ -344,7 +318,6 @@ func (cv *ConfigValidator) validateCircuitBreakerConfig(serviceName string, serv
 	}
 }
 
-// validateMetadata validates service metadata
 func (cv *ConfigValidator) validateMetadata(serviceName string, metadata map[string]string, result *ValidationResult) {
 	if len(metadata) == 0 {
 		return
@@ -394,7 +367,6 @@ func (cv *ConfigValidator) isValidDNSName(name string) bool {
 	return true
 }
 
-// isValidHostname checks if a string is a valid hostname
 func (cv *ConfigValidator) isValidHostname(hostname string) bool {
 	return cv.isValidDNSName(hostname)
 }

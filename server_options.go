@@ -72,4 +72,3 @@ func defaultServerOptions() ServerOptions {
 		},
 	}
 }
-

@@ -399,9 +399,8 @@ func (m *ClientMetrics) RecordConnectionPoolMiss(serviceName string) {
 	}
 }
 
-// RecordConnectionPoolSize records the current connection pool size for a specific service
+// RecordConnectionPoolSize records the current connection pool size for a service.
 func (m *ClientMetrics) RecordConnectionPoolSize(serviceName string, size int) {
-	// Use RecordPoolSize which accepts serviceName
 	m.RecordPoolSize(serviceName, size)
 }
 

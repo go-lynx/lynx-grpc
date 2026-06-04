@@ -1,6 +1,6 @@
 # gRPC Plugin for Lynx Framework
 
-This plugin provides both gRPC service (server) and client functionality for the Lynx framework, offering features such as TLS support, middleware integration, and configuration management.
+gRPC server and client plugins for the Lynx framework: TLS, connection pooling, retry, load balancing, circuit breaking, health, and Prometheus metrics.
 
 ## Version & Migration Notes
 
@@ -13,9 +13,8 @@ This plugin provides both gRPC service (server) and client functionality for the
 ## Features
 
 ### gRPC Service (Server)
-- Full gRPC server implementation
-- TLS support with client authentication
-- Built-in support:
+- TLS with client authentication
+- Built-in interceptors:
   - Tracing (OpenTelemetry; extracts trace from metadata)
   - Request logging (method, duration, trace id)
   - Per-method Prometheus metrics (FullMethod)
@@ -23,12 +22,9 @@ This plugin provides both gRPC service (server) and client functionality for the
   - Request validation (proto validate)
   - Panic recovery
 - Dynamic configuration with validation
-- Comprehensive health checking
-- Configurable graceful shutdown
-- Error handling and recovery
+- Health checking and configurable graceful shutdown
 
 ### gRPC Client
-- Full gRPC client implementation
 - Connection pooling and management (with deadlock-safe eviction)
 - Unary interceptors applied per connection:
   - **Tracing**: injects trace context into outgoing metadata (when `tracing_enabled` is true; works with lynx-tracer)

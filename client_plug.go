@@ -11,7 +11,7 @@ import (
 
 const clientPluginName = "grpc.client"
 
-// init function registers the gRPC client plugin to the global plugin factory
+// init registers the gRPC client plugin with the global plugin factory on import.
 func init() {
 	factory.GlobalTypedFactory().RegisterPlugin(clientPluginName, "lynx.grpc.client", func() plugins.Plugin {
 		return NewGrpcClientPlugin()
@@ -59,7 +59,6 @@ func GetOrCreateGrpcClientPlugin() *ClientPlugin {
 		}
 	}
 
-	// Create new plugin if not found
 	return NewGrpcClientPlugin()
 }
 

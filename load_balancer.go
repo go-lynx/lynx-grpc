@@ -22,15 +22,18 @@ import (
 type LoadBalancerType string
 
 const (
-	// LoadBalancerRoundRobin uses round-robin load balancing
+	// LoadBalancerRoundRobin distributes requests evenly across nodes (implemented
+	// via weighted round-robin with equal weights).
 	LoadBalancerRoundRobin LoadBalancerType = "round_robin"
-	// LoadBalancerRandom uses random load balancing
+	// LoadBalancerRandom picks a node uniformly at random; cheapest, no per-node state.
 	LoadBalancerRandom LoadBalancerType = "random"
-	// LoadBalancerWeightedRoundRobin uses weighted round-robin load balancing
+	// LoadBalancerWeightedRoundRobin biases selection by each node's weight metadata.
 	LoadBalancerWeightedRoundRobin LoadBalancerType = "weighted_round_robin"
-	// LoadBalancerP2C uses power of two choices load balancing
+	// LoadBalancerP2C samples two nodes and picks the less loaded one, approximating
+	// least-connections without scanning every node.
 	LoadBalancerP2C LoadBalancerType = "p2c"
-	// LoadBalancerConsistentHash uses consistent hash load balancing
+	// LoadBalancerConsistentHash maps a request key to a node so the same key sticks
+	// to the same node across calls (cache affinity).
 	LoadBalancerConsistentHash LoadBalancerType = "consistent_hash"
 )
 
@@ -73,16 +76,14 @@ func (lb *LoadBalancer) ConfigureService(serviceName string, config *LoadBalance
 	lb.mu.Lock()
 	defer lb.mu.Unlock()
 
-	// Store configuration
 	lb.configs[serviceName] = config
 
-	// Create selector based on strategy
 	sel, err := lb.createSelector(config)
 	if err != nil {
 		return fmt.Errorf("failed to create selector for service %s: %w", serviceName, err)
 	}
 
-	// Close existing selector if any
+	// Close the previous selector so reconfiguring a service doesn't leak its resources.
 	if existingSel, exists := lb.selectors[serviceName]; exists {
 		if closer, ok := existingSel.(interface{ Close() error }); ok {
 			err := closer.Close()
@@ -113,7 +114,7 @@ func (lb *LoadBalancer) SelectNode(ctx context.Context, serviceName string) (sel
 		lb.mu.Unlock()
 	}
 
-	// Get service instances from discovery (read under lock to avoid race with SetDiscovery)
+	// Read discovery under the lock to avoid racing SetDiscovery.
 	lb.mu.RLock()
 	discovery := lb.discovery
 	lb.mu.RUnlock()
@@ -164,12 +165,10 @@ func (lb *LoadBalancer) SelectNode(ctx context.Context, serviceName string) (sel
 		}
 	}
 
-	// Apply nodes to selector
 	if applier, ok := sel.(interface{ Apply([]selector.Node) }); ok {
 		applier.Apply(nodes)
 	}
 
-	// Apply the selector
 	selectedNode, done, err := sel.Select(ctx)
 	if err != nil {
 		if lb.metrics != nil {

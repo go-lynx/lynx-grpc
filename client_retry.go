@@ -14,7 +14,9 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// RetryHandler handles retry logic for gRPC client requests
+// RetryHandler retries an operation with exponential backoff. It is the optional
+// programmatic path; production RPC retries go through retryUnaryClientInterceptor.
+// A handler holds no per-call state, so a single instance is safe for concurrent use.
 type RetryHandler struct {
 	maxRetries        int
 	retryBackoff      time.Duration
@@ -32,7 +34,8 @@ func NewRetryHandler() *RetryHandler {
 	}
 }
 
-// Initialize initializes the retry handler with configuration
+// Initialize overrides max retry count and base backoff; maxBackoff and
+// multiplier keep their constructor defaults.
 func (r *RetryHandler) Initialize(maxRetries int, retryBackoff time.Duration) {
 	r.maxRetries = maxRetries
 	r.retryBackoff = retryBackoff
@@ -44,10 +47,7 @@ func (r *RetryHandler) ExecuteWithRetry(ctx context.Context, handler func(contex
 	backoff := r.retryBackoff
 
 	for attempt := 0; attempt <= r.maxRetries; attempt++ {
-		// Execute the request
 		resp, err := handler(ctx, req)
-
-		// If successful, return the response
 		if err == nil {
 			if attempt > 0 {
 				log.Infof("Request succeeded after %d retries", attempt)
@@ -57,31 +57,26 @@ func (r *RetryHandler) ExecuteWithRetry(ctx context.Context, handler func(contex
 
 		lastErr = err
 
-		// Check if the error is retryable
 		if !r.isRetryableError(err) {
 			log.Debugf("Error is not retryable: %v", err)
 			return nil, err
 		}
 
-		// If this was the last attempt, return the error
 		if attempt == r.maxRetries {
 			log.Errorf("Request failed after %d retries: %v", r.maxRetries, err)
 			return nil, err
 		}
 
-		// Log retry attempt
 		log.Warnf("Request failed (attempt %d/%d), retrying in %v: %v",
 			attempt+1, r.maxRetries+1, backoff, err)
 
-		// Wait before retrying
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-time.After(backoff):
-			// Continue to next attempt
 		}
 
-		// Calculate next backoff duration
+		// Grow backoff geometrically, capped at maxBackoff.
 		backoff = time.Duration(float64(backoff) * r.backoffMultiplier)
 		if backoff > r.maxBackoff {
 			backoff = r.maxBackoff
@@ -91,13 +86,18 @@ func (r *RetryHandler) ExecuteWithRetry(ctx context.Context, handler func(contex
 	return nil, lastErr
 }
 
-// isRetryableError determines if an error is retryable
+// isRetryableError reports whether err is worth retrying. Transient/server-side
+// codes (Unavailable, DeadlineExceeded, ResourceExhausted, Aborted, OutOfRange,
+// Internal, DataLoss) are retryable; client-fault codes (Unauthenticated,
+// PermissionDenied, InvalidArgument, NotFound, AlreadyExists, FailedPrecondition)
+// are not, since retrying them cannot succeed. Local context cancellation/deadline
+// is never retried. Unlike ClientPlugin.isRetryableError, this defaults non-gRPC
+// errors to retryable.
 func (r *RetryHandler) isRetryableError(err error) bool {
 	if err == nil {
 		return false
 	}
 
-	// Check gRPC status codes
 	if st, ok := status.FromError(err); ok {
 		switch st.Code() {
 		case codes.Unavailable, codes.DeadlineExceeded, codes.ResourceExhausted:
@@ -115,12 +115,10 @@ func (r *RetryHandler) isRetryableError(err error) bool {
 		}
 	}
 
-	// Check for context errors
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return false
 	}
 
-	// Default to retryable for unknown errors
 	return true
 }
 
@@ -150,7 +148,7 @@ type RetryConfig struct {
 	BackoffMultiplier float64
 }
 
-// DefaultRetryConfig returns default retry configuration
+// DefaultRetryConfig returns the defaults: 3 retries, 1s base backoff doubling up to 30s.
 func DefaultRetryConfig() RetryConfig {
 	return RetryConfig{
 		MaxRetries:        3,
@@ -160,7 +158,7 @@ func DefaultRetryConfig() RetryConfig {
 	}
 }
 
-// ExponentialBackoff calculates exponential backoff duration
+// ExponentialBackoff returns baseDelay * multiplier^attempt, capped at maxDelay.
 func ExponentialBackoff(attempt int, baseDelay time.Duration, maxDelay time.Duration, multiplier float64) time.Duration {
 	delay := time.Duration(float64(baseDelay) * math.Pow(multiplier, float64(attempt)))
 	if delay > maxDelay {
@@ -169,7 +167,9 @@ func ExponentialBackoff(attempt int, baseDelay time.Duration, maxDelay time.Dura
 	return delay
 }
 
-// Jitter adds random jitter to backoff duration
+// Jitter spreads delay by ±jitterPercent of its value to avoid synchronized
+// retry waves (thundering herd). jitterPercent must be in (0,1); values outside
+// that range return delay unchanged.
 func Jitter(delay time.Duration, jitterPercent float64) time.Duration {
 	if jitterPercent <= 0 || jitterPercent >= 1 {
 		return delay

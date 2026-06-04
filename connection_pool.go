@@ -14,17 +14,17 @@ import (
 	"google.golang.org/grpc/connectivity"
 )
 
-// ConnectionSelectionStrategy defines how to select a connection from the pool
+// ConnectionSelectionStrategy chooses which pooled connection an RPC reuses.
 type ConnectionSelectionStrategy int
 
 const (
-	// RoundRobin selects connections in a round-robin fashion
+	// RoundRobin cycles through connections evenly.
 	RoundRobin ConnectionSelectionStrategy = iota
-	// Random selects a random connection
+	// Random picks a connection uniformly at random.
 	Random
-	// LeastUsed selects the connection with the least usage count
+	// LeastUsed picks the connection with the lowest lifetime use count.
 	LeastUsed
-	// FirstAvailable selects the first available healthy connection
+	// FirstAvailable picks the first connection currently in a healthy state.
 	FirstAvailable
 )
 
@@ -90,7 +90,7 @@ func NewConnectionPoolWithStrategy(maxServices int, maxConnsPerService int, idle
 	}
 
 	if enabled && idleTimeout > 0 {
-		// Start cleanup routine for idle connections
+		// Sweep at half the idle timeout so a connection is reaped within one idleTimeout of going idle.
 		pool.cleanupTicker = time.NewTicker(idleTimeout / 2)
 		pool.cleanupWG.Add(1)
 		go pool.cleanupRoutine()
@@ -110,11 +110,9 @@ const maxGetConnectionRetries = 3
 
 func (p *ConnectionPool) getConnectionWithRetry(serviceName string, createFunc func() (*grpc.ClientConn, error), retryCount int) (*grpc.ClientConn, error) {
 	if !p.enabled {
-		// If pooling is disabled, create a new connection each time
 		return createFunc()
 	}
 
-	// Prevent infinite recursion
 	if retryCount >= maxGetConnectionRetries {
 		log.Warnf("Service pool for %s was deleted multiple times, creating connection directly", serviceName)
 		return createFunc()
@@ -123,9 +121,9 @@ func (p *ConnectionPool) getConnectionWithRetry(serviceName string, createFunc f
 	p.mu.Lock()
 	servicePool, exists := p.services[serviceName]
 	if !exists {
-		// Check if we've reached the maximum number of services
 		if len(p.services) >= p.maxServices {
-			// Evict least recently used service pool without holding lock (avoid deadlock)
+			// At capacity: evict the LRU service. CloseConnection acquires p.mu itself,
+			// so release the lock first to avoid self-deadlock, then re-acquire.
 			toEvict := p.getLRUServiceNameLocked()
 			p.mu.Unlock()
 			if toEvict != "" {
@@ -133,7 +131,6 @@ func (p *ConnectionPool) getConnectionWithRetry(serviceName string, createFunc f
 			}
 			p.mu.Lock()
 		}
-		// Create new service pool
 		servicePool = &serviceConnectionPool{
 			serviceName: serviceName,
 			connections: make([]*pooledConnection, 0),
@@ -144,24 +141,24 @@ func (p *ConnectionPool) getConnectionWithRetry(serviceName string, createFunc f
 	}
 	p.mu.Unlock()
 
-	// Re-check servicePool exists after releasing lock (defensive programming)
-	// This handles the rare case where servicePool was deleted between lock release and use
+	// The cleanup routine or an eviction may have removed the pool between the
+	// unlock above and now; re-read it and retry (bounded) if it's gone.
 	p.mu.RLock()
 	servicePool, exists = p.services[serviceName]
 	p.mu.RUnlock()
 
 	if !exists {
-		// Service pool was deleted (e.g., by cleanup or eviction), retry with limit
-		// This should be very rare, but we handle it defensively
 		log.Debugf("Service pool for %s was deleted, retrying connection creation (attempt %d/%d)", serviceName, retryCount+1, maxGetConnectionRetries)
 		return p.getConnectionWithRetry(serviceName, createFunc, retryCount+1)
 	}
 
-	// Get connection from service pool
 	return servicePool.GetConnection(p.selectionStrategy, p.maxConnsPerService, createFunc, p.metrics)
 }
 
-// GetConnection retrieves a connection from the service pool
+// GetConnection returns a reusable connection or creates one. Creation is
+// serialized by createMu so concurrent callers don't all dial at once; the
+// reuse check is repeated under createMu (double-checked) so a connection created
+// by a racing caller is reused instead of opening a duplicate.
 func (sp *serviceConnectionPool) GetConnection(strategy ConnectionSelectionStrategy, maxConns int, createFunc func() (*grpc.ClientConn, error), metrics *ClientMetrics) (*grpc.ClientConn, error) {
 	if conn := sp.selectReusableConnection(strategy, metrics); conn != nil {
 		return conn, nil
@@ -218,12 +215,12 @@ func (sp *serviceConnectionPool) selectReusableConnection(strategy ConnectionSel
 
 	sp.lastUsed = now
 
-	// Clean up unhealthy connections first
+	// Drop dead connections before selecting so we never hand back a broken one.
+	// They are closed via defer after sp.mu is released to avoid Close() under the lock.
 	unhealthy := sp.cleanupUnhealthyLocked()
 	defer closePooledConnections(unhealthy)
 	defer sp.mu.Unlock()
 
-	// Select a healthy connection if available
 	if len(sp.connections) > 0 {
 		conn := sp.selectConnection(strategy)
 		if conn != nil && isConnectionHealthy(conn.conn) {
@@ -330,7 +327,6 @@ func (sp *serviceConnectionPool) evictLeastUsedLocked() *pooledConnection {
 	}
 
 	if leastUsed != nil && minIndex >= 0 {
-		// Remove from slice
 		sp.connections = append(sp.connections[:minIndex], sp.connections[minIndex+1:]...)
 	}
 	return leastUsed
@@ -584,8 +580,10 @@ func (p *ConnectionPool) cleanupRoutine() {
 	}
 }
 
-// cleanupIdleConnections removes connections that have been idle for too long
-// Avoids holding locks while closing connections to prevent blocking
+// cleanupIdleConnections reaps connections (and whole service pools) idle past
+// idleTimeout. It runs in two phases on purpose: collect victims under the locks,
+// then Close() them after all locks are released so a slow Close never stalls
+// callers contending for the pool.
 func (p *ConnectionPool) cleanupIdleConnections() {
 	p.mu.Lock()
 	now := time.Now()
@@ -593,18 +591,15 @@ func (p *ConnectionPool) cleanupIdleConnections() {
 	var connectionsToClose []*pooledConnection
 	var connectionsToKeep = make(map[string][]*pooledConnection)
 
-	// Collect connections to close while holding locks
 	for serviceName, servicePool := range p.services {
 		servicePool.mu.Lock()
-		// Check if service pool is idle
 		if now.Sub(servicePool.lastUsed) > p.idleTimeout {
+			// Whole pool is idle: drop it and all its connections.
 			servicesToRemove = append(servicesToRemove, serviceName)
-			// Collect all connections for removal
 			for _, conn := range servicePool.connections {
 				connectionsToClose = append(connectionsToClose, conn)
 			}
 		} else {
-			// Clean up idle connections within the service pool
 			activeConns := make([]*pooledConnection, 0)
 			for _, conn := range servicePool.connections {
 				conn.mu.RLock()
@@ -612,10 +607,8 @@ func (p *ConnectionPool) cleanupIdleConnections() {
 				conn.mu.RUnlock()
 
 				if !idle {
-					// Connection is still active, keep it
 					activeConns = append(activeConns, conn)
 				} else {
-					// Mark for closing
 					connectionsToClose = append(connectionsToClose, conn)
 				}
 			}
@@ -625,14 +618,12 @@ func (p *ConnectionPool) cleanupIdleConnections() {
 	}
 	p.mu.Unlock()
 
-	// Close connections without holding locks
 	for _, conn := range connectionsToClose {
 		conn.mu.Lock()
 		_ = conn.conn.Close()
 		conn.mu.Unlock()
 	}
 
-	// Update service pools without holding main lock
 	p.mu.Lock()
 	for serviceName, activeConns := range connectionsToKeep {
 		if servicePool, exists := p.services[serviceName]; exists {
@@ -642,7 +633,6 @@ func (p *ConnectionPool) cleanupIdleConnections() {
 		}
 	}
 
-	// Remove idle service pools
 	for _, serviceName := range servicesToRemove {
 		delete(p.services, serviceName)
 		if p.metrics != nil {

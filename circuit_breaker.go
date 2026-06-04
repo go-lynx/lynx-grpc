@@ -235,41 +235,32 @@ func (cb *CircuitBreaker) isFailure(err error) bool {
 		return false
 	}
 
-	// Check for context cancellation or timeout - these are not service failures
+	// Caller-driven cancellation/timeout reflects the client, not upstream health,
+	// so it must not trip the breaker.
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
 
-	// Check gRPC status codes
+	// Only count server-side faults. Client-fault codes (4xx-equivalent) would never
+	// recover via tripping the breaker, so they are excluded; everything else counts.
 	if st, ok := status.FromError(err); ok {
 		switch st.Code() {
-		case codes.OK:
+		case codes.OK,
+			codes.Canceled,
+			codes.InvalidArgument,
+			codes.NotFound,
+			codes.AlreadyExists,
+			codes.PermissionDenied,
+			codes.Unauthenticated,
+			codes.FailedPrecondition,
+			codes.OutOfRange,
+			codes.Unimplemented:
 			return false
-		case codes.Canceled:
-			return false
-		case codes.InvalidArgument:
-			return false // Client error, not service failure
-		case codes.NotFound:
-			return false // Client error, not service failure
-		case codes.AlreadyExists:
-			return false // Client error, not service failure
-		case codes.PermissionDenied:
-			return false // Client error, not service failure
-		case codes.Unauthenticated:
-			return false // Client error, not service failure
-		case codes.FailedPrecondition:
-			return false // Client error, not service failure
-		case codes.OutOfRange:
-			return false // Client error, not service failure
-		case codes.Unimplemented:
-			return false // Client error, not service failure
 		default:
-			// All other codes are considered service failures
 			return true
 		}
 	}
 
-	// Default to considering it a failure
 	return true
 }
 
