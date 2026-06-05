@@ -70,10 +70,12 @@ func (r *RetryHandler) ExecuteWithRetry(ctx context.Context, handler func(contex
 		log.Warnf("Request failed (attempt %d/%d), retrying in %v: %v",
 			attempt+1, r.maxRetries+1, backoff, err)
 
+		timer := time.NewTimer(backoff)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return nil, ctx.Err()
-		case <-time.After(backoff):
+		case <-timer.C:
 		}
 
 		// Grow backoff geometrically, capped at maxBackoff.

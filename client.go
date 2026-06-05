@@ -1101,6 +1101,9 @@ func (c *ClientPlugin) calculateRetryDelay(attempt int, baseDelay, maxDelay time
 	jitter := time.Duration(float64(delay) * 0.25 * (rand.Float64()*2 - 1))
 	delay += jitter
 
+	if delay > maxDelay {
+		delay = maxDelay
+	}
 	if delay < 0 {
 		delay = baseDelay
 	}

@@ -158,9 +158,9 @@ func (c *ClientPlugin) retryUnaryClientInterceptor(config ClientConfig) grpc.Una
 			}
 			delay := c.calculateRetryDelay(attempt, baseDelay, 5*time.Second)
 			timer := time.NewTimer(delay)
+			defer timer.Stop()
 			select {
 			case <-ctx.Done():
-				timer.Stop()
 				return ctx.Err()
 			case <-timer.C:
 			}

@@ -157,6 +157,20 @@ func (cb *CircuitBreaker) allowRequest() bool {
 		return false
 
 	case CircuitBreakerHalfOpen:
+		// If the HalfOpen probe window has elapsed with no conclusive result
+		// (e.g. all probe requests are hanging), fall back to Open so the next
+		// RecoveryTimeout cycle gets a fresh chance.
+		if cb.config.RecoveryTimeout > 0 && now.Sub(cb.lastStateChange) >= cb.config.RecoveryTimeout {
+			cb.state = CircuitBreakerOpen
+			cb.lastStateChange = now
+			cb.lastFailureTime = now
+			cb.concurrentRequests = 0
+			cb.successes = 0
+			if cb.metrics != nil {
+				cb.metrics.RecordCircuitBreakerState(cb.serviceName, cb.state.String())
+			}
+			return false
+		}
 		// Allow limited concurrent requests
 		if cb.concurrentRequests < cb.config.MaxConcurrentRequests {
 			cb.concurrentRequests++

@@ -4,11 +4,11 @@ package grpc
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/go-kratos/kratos/v2/log"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -18,67 +18,47 @@ import (
 )
 
 var (
-	grpcServerUp = promauto.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Namespace: "lynx",
-			Subsystem: "grpc",
-			Name:      "server_up",
-			Help:      "Whether the gRPC server is up",
-		},
-		[]string{"server_name", "address"},
-	)
+	grpcServerMetricsOnce sync.Once
 
-	grpcRequestsTotal = promauto.NewCounterVec(
-		prometheus.CounterOpts{
-			Namespace: "lynx",
-			Subsystem: "grpc",
-			Name:      "requests_total",
-			Help:      "Total number of gRPC requests",
-		},
-		[]string{"method", "status"},
-	)
-
-	grpcRequestDuration = promauto.NewHistogramVec(
-		prometheus.HistogramOpts{
-			Namespace: "lynx",
-			Subsystem: "grpc",
-			Name:      "request_duration_seconds",
-			Help:      "Duration of gRPC requests",
-			Buckets:   prometheus.DefBuckets,
-		},
-		[]string{"method"},
-	)
-
-	grpcActiveConnections = promauto.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Namespace: "lynx",
-			Subsystem: "grpc",
-			Name:      "active_connections",
-			Help:      "Number of active gRPC connections",
-		},
-		[]string{"server_name"},
-	)
-
-	grpcServerStartTime = promauto.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Namespace: "lynx",
-			Subsystem: "grpc",
-			Name:      "server_start_time_seconds",
-			Help:      "Unix timestamp of gRPC server start time",
-		},
-		[]string{"server_name"},
-	)
-
-	grpcServerErrors = promauto.NewCounterVec(
-		prometheus.CounterOpts{
-			Namespace: "lynx",
-			Subsystem: "grpc",
-			Name:      "server_errors_total",
-			Help:      "Total number of gRPC server errors",
-		},
-		[]string{"error_type"},
-	)
+	grpcServerUp          *prometheus.GaugeVec
+	grpcRequestsTotal     *prometheus.CounterVec
+	grpcRequestDuration   *prometheus.HistogramVec
+	grpcActiveConnections *prometheus.GaugeVec
+	grpcServerStartTime   *prometheus.GaugeVec
+	grpcServerErrors      *prometheus.CounterVec
 )
+
+// ensureGrpcServerMetrics registers server-side Prometheus collectors exactly once.
+// Using the AlreadyRegisteredError pattern (via registerOrReuseXxx) instead of promauto
+// prevents panics when the package is linked more than once in a single test binary.
+func ensureGrpcServerMetrics() {
+	grpcServerMetricsOnce.Do(func() {
+		grpcServerUp = registerOrReuseGaugeVec(
+			prometheus.GaugeOpts{Namespace: "lynx", Subsystem: "grpc", Name: "server_up", Help: "Whether the gRPC server is up"},
+			[]string{"server_name", "address"},
+		)
+		grpcRequestsTotal = registerOrReuseCounterVec(
+			prometheus.CounterOpts{Namespace: "lynx", Subsystem: "grpc", Name: "requests_total", Help: "Total number of gRPC requests"},
+			[]string{"method", "status"},
+		)
+		grpcRequestDuration = registerOrReuseHistogramVec(
+			prometheus.HistogramOpts{Namespace: "lynx", Subsystem: "grpc", Name: "request_duration_seconds", Help: "Duration of gRPC requests", Buckets: prometheus.DefBuckets},
+			[]string{"method"},
+		)
+		grpcActiveConnections = registerOrReuseGaugeVec(
+			prometheus.GaugeOpts{Namespace: "lynx", Subsystem: "grpc", Name: "active_connections", Help: "Number of active gRPC connections"},
+			[]string{"server_name"},
+		)
+		grpcServerStartTime = registerOrReuseGaugeVec(
+			prometheus.GaugeOpts{Namespace: "lynx", Subsystem: "grpc", Name: "server_start_time_seconds", Help: "Unix timestamp of gRPC server start time"},
+			[]string{"server_name"},
+		)
+		grpcServerErrors = registerOrReuseCounterVec(
+			prometheus.CounterOpts{Namespace: "lynx", Subsystem: "grpc", Name: "server_errors_total", Help: "Total number of gRPC server errors"},
+			[]string{"error_type"},
+		)
+	})
+}
 
 func (g *Service) recordHealthCheckMetricsInternal(healthy bool) {
 	if g.conf == nil {
@@ -220,9 +200,11 @@ func (g *Service) getServerCircuitBreakerUnaryInterceptor() grpc.UnaryServerInte
 	}
 }
 
-// getServerInterceptorChain returns the native gRPC UnaryServerInterceptors in order: rate limit, inflight, circuit breaker (if enabled), metrics (if enabled), logging (if enabled).
+// getServerInterceptorChain returns the native gRPC UnaryServerInterceptors in order:
+// recovery (always first), rate limit, inflight, circuit breaker (if enabled), metrics (if enabled), logging (if enabled).
 func (g *Service) getServerInterceptorChain() []grpc.UnaryServerInterceptor {
-	var chain []grpc.UnaryServerInterceptor
+	// Recovery always leads so no downstream interceptor or handler panic can crash the process.
+	chain := []grpc.UnaryServerInterceptor{g.getRecoveryUnaryInterceptor()}
 	if g.serverOpts != nil {
 		if g.serverOpts.limiter != nil {
 			chain = append(chain, g.getRateLimitUnaryInterceptor())
@@ -240,9 +222,38 @@ func (g *Service) getServerInterceptorChain() []grpc.UnaryServerInterceptor {
 			chain = append(chain, g.getServerLoggingInterceptor())
 		}
 	} else {
-		chain = []grpc.UnaryServerInterceptor{g.getMetricsHandler(), g.getServerLoggingInterceptor()}
+		chain = append(chain, g.getMetricsHandler(), g.getServerLoggingInterceptor())
 	}
 	return chain
+}
+
+// getRecoveryUnaryInterceptor returns a UnaryServerInterceptor that recovers from
+// panics in the handler or any downstream interceptor, logs the incident, and
+// returns codes.Internal so the gRPC connection stays alive.
+func (g *Service) getRecoveryUnaryInterceptor() grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp any, err error) {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Context(ctx).Errorf("[gRPC Server] panic in unary handler method=%s panic=%v", info.FullMethod, r)
+				err = status.Errorf(codes.Internal, "internal server error")
+			}
+		}()
+		return handler(ctx, req)
+	}
+}
+
+// getRecoveryStreamInterceptor returns a StreamServerInterceptor that recovers from
+// panics in the stream handler or any downstream interceptor.
+func (g *Service) getRecoveryStreamInterceptor() grpc.StreamServerInterceptor {
+	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) (err error) {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Context(ss.Context()).Errorf("[gRPC Server] panic in stream handler method=%s panic=%v", info.FullMethod, r)
+				err = status.Errorf(codes.Internal, "internal server error")
+			}
+		}()
+		return handler(srv, ss)
+	}
 }
 
 // getServerCircuitBreakerStreamInterceptor returns a StreamServerInterceptor that applies the same circuit breaker to stream RPCs.
@@ -305,9 +316,11 @@ func (g *Service) getStreamLoggingInterceptor() grpc.StreamServerInterceptor {
 	}
 }
 
-// getServerStreamInterceptorChain returns StreamServerInterceptors: circuit breaker (if enabled), metrics (if enabled), logging (if enabled).
+// getServerStreamInterceptorChain returns StreamServerInterceptors:
+// recovery (always first), circuit breaker (if enabled), metrics (if enabled), logging (if enabled).
 func (g *Service) getServerStreamInterceptorChain() []grpc.StreamServerInterceptor {
-	var chain []grpc.StreamServerInterceptor
+	// Recovery always leads so no downstream interceptor or handler panic can crash the process.
+	chain := []grpc.StreamServerInterceptor{g.getRecoveryStreamInterceptor()}
 	if g.serverOpts != nil {
 		if g.serverOpts.serverCircuitBreaker != nil {
 			chain = append(chain, g.getServerCircuitBreakerStreamInterceptor())
@@ -319,7 +332,7 @@ func (g *Service) getServerStreamInterceptorChain() []grpc.StreamServerIntercept
 			chain = append(chain, g.getStreamLoggingInterceptor())
 		}
 	} else {
-		chain = []grpc.StreamServerInterceptor{g.getStreamMetricsInterceptor(), g.getStreamLoggingInterceptor()}
+		chain = append(chain, g.getStreamMetricsInterceptor(), g.getStreamLoggingInterceptor())
 	}
 	return chain
 }

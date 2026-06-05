@@ -108,6 +108,7 @@ func (g *Service) updateHealthServingStatusWithContext(ctx context.Context) {
 // NewGrpcService returns an unstarted gRPC service plugin; config is loaded later
 // in InitializeResources.
 func NewGrpcService() *Service {
+	ensureGrpcServerMetrics()
 	return &Service{
 		BasePlugin: plugins.NewBasePlugin(
 			plugins.GeneratePluginID("", pluginName, pluginVersion),
@@ -453,7 +454,11 @@ func (g *Service) stopHealthPoller(ctx context.Context) error {
 		g.healthPollCancel = nil
 		return nil
 	case <-ctx.Done():
-		return ctx.Err()
+		// The poller was already signalled to stop; let cleanup continue rather
+		// than blocking the entire shutdown sequence on a slow poller.
+		log.Warnf("[gRPC] health poller shutdown deadline exceeded: %v", ctx.Err())
+		g.healthPollCancel = nil
+		return nil
 	}
 }
 

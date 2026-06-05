@@ -130,14 +130,19 @@ func (p *ConnectionPool) getConnectionWithRetry(serviceName string, createFunc f
 				_ = p.CloseConnection(toEvict)
 			}
 			p.mu.Lock()
+			// Re-check: another goroutine may have created the entry for serviceName
+			// during the eviction window (between Unlock and re-Lock above).
+			servicePool, exists = p.services[serviceName]
 		}
-		servicePool = &serviceConnectionPool{
-			serviceName: serviceName,
-			connections: make([]*pooledConnection, 0),
-			createdAt:   time.Now(),
-			lastUsed:    time.Now(),
+		if !exists {
+			servicePool = &serviceConnectionPool{
+				serviceName: serviceName,
+				connections: make([]*pooledConnection, 0),
+				createdAt:   time.Now(),
+				lastUsed:    time.Now(),
+			}
+			p.services[serviceName] = servicePool
 		}
-		p.services[serviceName] = servicePool
 	}
 	p.mu.Unlock()
 
