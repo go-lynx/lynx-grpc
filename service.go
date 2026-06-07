@@ -29,7 +29,7 @@ import (
 
 const (
 	pluginName        = "grpc.service"
-	pluginVersion     = "v1.6.1"
+	pluginVersion     = "v1.6.3"
 	pluginDescription = "grpc service plugin for lynx framework"
 	// confPrefix is the config key prefix; both conf.Service and ServerOptions load from it.
 	confPrefix = "lynx.grpc.service"
