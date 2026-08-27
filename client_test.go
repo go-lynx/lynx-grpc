@@ -19,13 +19,13 @@ func TestNewGrpcClientPlugin(t *testing.T) {
 	plugin := NewGrpcClientPlugin()
 	assert.NotNil(t, plugin)
 	assert.Equal(t, "grpc.client", plugin.Name())
-	assert.Equal(t, "v1.5.5", plugin.Version())
+	assert.Equal(t, pluginVersion, plugin.Version())
 	assert.Equal(t, "gRPC client plugin for Lynx framework", plugin.Description())
 	assert.Equal(t, 20, plugin.Weight())
 }
 
 func TestClientPluginProtocol(t *testing.T) {
-	plugin := &ClientPlugin{BasePlugin: plugins.NewBasePlugin("grpc.client", "grpc.client", "gRPC client plugin for Lynx framework", "v1.5.5", "lynx.grpc.client", 20)}
+	plugin := &ClientPlugin{BasePlugin: plugins.NewBasePlugin("grpc.client", "grpc.client", "gRPC client plugin for Lynx framework", pluginVersion, "lynx.grpc.client", 20)}
 	protocol := plugin.PluginProtocol()
 	assert.True(t, protocol.ManagedLifecycle)
 	assert.True(t, protocol.HealthAware)
@@ -33,7 +33,7 @@ func TestClientPluginProtocol(t *testing.T) {
 }
 
 func TestClientPluginStartContextCanceled(t *testing.T) {
-	plugin := &ClientPlugin{BasePlugin: plugins.NewBasePlugin("grpc.client", "grpc.client", "gRPC client plugin for Lynx framework", "v1.5.5", "lynx.grpc.client", 20)}
+	plugin := &ClientPlugin{BasePlugin: plugins.NewBasePlugin("grpc.client", "grpc.client", "gRPC client plugin for Lynx framework", pluginVersion, "lynx.grpc.client", 20)}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -44,7 +44,7 @@ func TestClientPluginStartContextCanceled(t *testing.T) {
 
 func TestCheckRequiredServicesContextCanceled(t *testing.T) {
 	plugin := &ClientPlugin{
-		BasePlugin: plugins.NewBasePlugin("grpc.client", "grpc.client", "gRPC client plugin for Lynx framework", "v1.5.5", "lynx.grpc.client", 20),
+		BasePlugin: plugins.NewBasePlugin("grpc.client", "grpc.client", "gRPC client plugin for Lynx framework", pluginVersion, "lynx.grpc.client", 20),
 	}
 	plugin.conf = &conf.GrpcClient{
 		SubscribeServices: []*conf.SubscribeService{
@@ -283,7 +283,7 @@ func TestClientPluginConfiguration(t *testing.T) {
 
 func TestClientConfigureRebuildsPool(t *testing.T) {
 	plugin := &ClientPlugin{
-		BasePlugin:      plugins.NewBasePlugin("grpc.client", "grpc.client", "gRPC client plugin for Lynx framework", "v1.5.5", "lynx.grpc.client", 20),
+		BasePlugin:      plugins.NewBasePlugin("grpc.client", "grpc.client", "gRPC client plugin for Lynx framework", pluginVersion, "lynx.grpc.client", 20),
 		conf:            &conf.GrpcClient{},
 		connections:     make(map[string]*grpc.ClientConn),
 		connectionPool:  NewConnectionPool(10, 5, 5*time.Minute, false, nil),

@@ -39,15 +39,15 @@ const (
 // lifecycle management, health reporting, metrics, and TLS.
 type Service struct {
 	*plugins.BasePlugin
-	server      *grpc.Server
+	server *grpc.Server
 	// healthServer reports readiness via the gRPC health protocol.
 	healthServer *health.Server
 	// cancel function for background health status poller
 	healthPollCancel context.CancelFunc
 	// wait for the health poller goroutine to exit before returning from cleanup
 	healthPollWG sync.WaitGroup
-	conf *conf.Service
-	rt   plugins.Runtime
+	conf         *conf.Service
+	rt           plugins.Runtime
 	// Dependency injection providers; any nil provider falls back to the global Lynx app.
 	appNameProvider      func() string
 	loggerProvider       func() any

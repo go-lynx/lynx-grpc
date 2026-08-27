@@ -107,7 +107,7 @@ func NewGrpcClientPlugin() *ClientPlugin {
 	circuitBreakers := NewCircuitBreakerManager(metrics)
 
 	return &ClientPlugin{
-		BasePlugin:      plugins.NewBasePlugin("grpc.client", "grpc.client", "gRPC client plugin for Lynx framework", "v1.5.5", "lynx.grpc.client", 20),
+		BasePlugin:      plugins.NewBasePlugin("grpc.client", "grpc.client", "gRPC client plugin for Lynx framework", pluginVersion, "lynx.grpc.client", 20),
 		conf:            &conf.GrpcClient{},
 		connections:     make(map[string]*grpc.ClientConn),
 		connectionPool:  connectionPool,
